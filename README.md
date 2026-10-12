@@ -82,7 +82,7 @@ meta/settings     设置
 
 ## 在 Claude 里运行
 
-同一个页面也可以作为 claude.ai 的 Artifact 运行：把 `index.html` 交给 Claude，让它发布成 Artifact，并启用 `db` 和 `sample` 两个能力。页面检测到 `window.claude` 后，会自动把数据存进 Artifact 自己的数据库（页面底部的说明会随之变化），邮件解析也变成一键完成（通过你自己的 Claude 账号）。其他情况下自动使用浏览器本地存储。
+同一个页面也可以作为 claude.ai 的 Artifact 运行：把 `index.html` 交给 Claude，让它发布成 Artifact，并启用 `db` 和 `sample` 两个能力。页面检测到 `window.claude` 后，会自动把数据存进 Artifact 自己的数据库（页面底部的说明会随之变化），邮件解析也变成一键完成（通过你自己的 Claude 账号）。如果你在 claude.ai 里连接了 Gmail，还会多出「同步邮箱」按钮：页面只读地搜索求职相关的邮件，解析后列出来，你确认才保存（需要给页面读取 Gmail 的权限）。其他情况下自动使用浏览器本地存储。
 
 ## 参与
 
