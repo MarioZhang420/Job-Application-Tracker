@@ -77,6 +77,15 @@
 
 换工作或换地址后，别忘了在 10 天内向 DSO 报告。
 
+## 哪些算一次投递
+
+「今天投递」、近 7 天、日均、连续天数、最近 21 天图、进展漏斗和进度图，数的都是**你投出去的申请**。拒信是对某次申请的回复，不是新的申请，所以不会加到投递数里：
+
+- 邮件同步或粘贴邮件时，拒信会先去找对应的投递（公司和职位都对得上），找到就只给它添加一条「拒信」进展。
+- 找不到对应的投递（比如那份申请当时没记录），就单独记下这封拒信，标成「不计入投递数」。这样的记录放在投递记录最下面的「没有投递记录」里，不进上面那些统计。
+- 点进这样的记录，可以勾上「计入投递数」并填真实的投递日期；反过来，任何一条投递也可以取消勾选，不再计入。
+- OA、面试、Offer 邮件找不到对应投递时，仍会新建一条投递（这类邮件通常紧跟在投递之后），和手动「+ 添加待办」一样。
+
 ## 数据结构
 
 存储是一个简单的文档库，路径形如 `集合/文档`：
@@ -84,9 +93,11 @@
 ```text
 apps/<id>         一条投递
   company, role, track ("ng" | "intern"), appliedOn (YYYY-MM-DD),
-  link, location, notes, createdAt, updatedAt,
-  events: [{ id, kind, date, due?, note?, done }]
+  link, location, notes, src?, uncounted?, createdAt, updatedAt,
+  events: [{ id, kind, date, due?, note?, src?, done }]
           kind: oa | screen | interview | offer | rejected | withdrawn
+          src: 来源邮件 ID（同步邮箱时记录，用来跳过已经处理过的邮件）
+          uncounted: true 表示不计入投递数（见下）
 meta/settings     设置
   dailyGoal, gradDate,
   opt: { on, dsoDate, filedDate, receiptDate, approvedDate, startDate, endDate,

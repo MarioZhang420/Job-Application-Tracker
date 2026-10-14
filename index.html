@@ -402,6 +402,10 @@ const S = { db:null, sample:null, mcp:null, dl:null, mailsync:{}, settings:{}, m
 (function(){ const t = ls.get('jt-track'); if (t === 'ng' || t === 'intern') S.track = t; })();
 
 const trackOf = a => a.track === 'intern' ? 'intern' : 'ng';
+/* Only an application with a real application record counts toward the totals (today, funnel, chart,
+   flow chart). A rejection email that matches no application is kept in the log as a record marked
+   `uncounted`, so a rejection letter never adds to the number of applications. */
+const isCounted = a => a.uncounted !== true;
 /* Type rule: only the job title decides. It is an Intern only if the title says so; everything else
    (including an unknown title) is New Grad / full-time. */
 const INTERN_RE = /\b(?:intern|interns|internship|internships|co-?op)\b|实习/i;
@@ -563,9 +567,22 @@ function renderLog(L, t){
     return;
   }
   if (!list.length){ $('#log').innerHTML = '<div class="log-empty muted">没有符合条件的投递。</div>'; return; }
+  const main = list.filter(isCounted), extra = list.filter(a => !isCounted(a));
+  const row = function(a){
+    const ev = a.events || [], last = ev[ev.length - 1];
+    let lastTxt = '';
+    if (last){
+      lastTxt = (KINDS[last.kind] ? KINDS[last.kind].label : last.kind) + ' · ' + short(last.date) + (last.due && !last.done ? ' → ' + short(last.due) : '') + (last.note ? ' · ' + last.note : '');
+    }
+    return '<li><button type="button" class="row" data-open="' + esc(a.id) + '">' +
+      '<span class="r-main"><b>' + esc(a.company) + '</b><span>' + esc(a.role || '未填职位') + '</span></span>' +
+      '<span class="tag ' + trackOf(a) + '">' + TRACK[trackOf(a)] + '</span>' +
+      '<span class="pill st-' + statusOf(a) + '">' + STATUS[statusOf(a)] + '</span>' +
+      '<span class="r-last">' + esc(lastTxt) + '</span></button></li>';
+  };
   let html = '', cur = null;
-  const counts = {}; list.forEach(a => { counts[a.appliedOn] = (counts[a.appliedOn] || 0) + 1; });
-  list.forEach(function(a){
+  const counts = {}; main.forEach(a => { counts[a.appliedOn] = (counts[a.appliedOn] || 0) + 1; });
+  main.forEach(function(a){
     if (a.appliedOn !== cur){
       if (cur !== null) html += '</ul>';
       cur = a.appliedOn;
@@ -573,18 +590,15 @@ function renderLog(L, t){
       const nm = dd === 0 ? '今天' : dd === -1 ? '昨天' : fmt(cur);
       html += '<div class="day-h"><b>' + nm + (dd === 0 || dd === -1 ? ' · ' + short(cur) : '') + '</b><span>' + counts[cur] + ' 个</span></div><ul class="rows">';
     }
-    const ev = a.events || [], last = ev[ev.length - 1];
-    let lastTxt = '';
-    if (last){
-      lastTxt = (KINDS[last.kind] ? KINDS[last.kind].label : last.kind) + ' · ' + short(last.date) + (last.due && !last.done ? ' → ' + short(last.due) : '') + (last.note ? ' · ' + last.note : '');
-    }
-    html += '<li><button type="button" class="row" data-open="' + esc(a.id) + '">' +
-      '<span class="r-main"><b>' + esc(a.company) + '</b><span>' + esc(a.role || '未填职位') + '</span></span>' +
-      '<span class="tag ' + trackOf(a) + '">' + TRACK[trackOf(a)] + '</span>' +
-      '<span class="pill st-' + statusOf(a) + '">' + STATUS[statusOf(a)] + '</span>' +
-      '<span class="r-last">' + esc(lastTxt) + '</span></button></li>';
+    html += row(a);
   });
-  html += '</ul>';
+  if (main.length) html += '</ul>';
+  if (extra.length){
+    // 邮件里出现、但没有对应投递记录的（比如只收到拒信）：留在这里，不计入投递数
+    const lastOf = a => { const ev = a.events || []; return ev.length ? ev[ev.length - 1].date : a.appliedOn; };
+    extra.sort((a, b) => lastOf(a) < lastOf(b) ? 1 : lastOf(a) > lastOf(b) ? -1 : 0);
+    html += '<div class="day-h"><b>没有投递记录</b><span>' + extra.length + ' 个 · 不计入投递数</span></div><ul class="rows">' + extra.map(row).join('') + '</ul>';
+  }
   $('#log').innerHTML = html;
 }
 
@@ -594,7 +608,8 @@ function render(){
   $('#eyebrow').textContent = fmt(t) + (gd ? (gdd > 0 ? ' · 距离毕业 ' + gdd + ' 天' : gdd === 0 ? ' · 今天毕业' : ' · 已毕业 ' + (-gdd) + ' 天') : '');
   document.querySelectorAll('[data-track]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.track === S.track)));
   const L = S.apps.filter(a => S.track === 'all' || trackOf(a) === S.track);
-  renderToday(L, t); renderFunnel(L); renderChart(L, t); renderUpcoming(L, t); renderLog(L, t); renderGrad(t);
+  const La = L.filter(isCounted);
+  renderToday(La, t); renderFunnel(La); renderChart(La, t); renderUpcoming(L, t); renderLog(L, t); renderGrad(t);
   if (S.modal && S.modal.type === 'detail') renderTimeline();
 }
 
@@ -708,6 +723,8 @@ function openDetail(id, opener){
           '<label class="seg-opt"><input type="radio" name="in-track" value="ng"><span>New Grad</span></label>' +
           '<label class="seg-opt"><input type="radio" name="in-track" value="intern"><span>Intern</span></label></div></div>' +
         '<label class="field"><span class="lbl">投递日期</span><input type="date" id="in-date"></label>' +
+        '<label class="chk"><input type="checkbox" id="in-counted">计入投递数</label>' +
+        '<p class="hint full" style="margin:-4px 0 0">取消勾选后，这条不会算进今天投递、漏斗、最近 21 天和进度图。同步邮箱时，找不到对应投递的拒信会新建一条这样的记录，默认不计入；确实是你在这天投的，就勾上，并把投递日期改成真实日期。</p>' +
         '<label class="field"><span class="lbl">地点</span><input id="in-loc"></label>' +
         '<label class="field"><span class="lbl">职位链接</span><input id="in-link" type="text" inputmode="url" placeholder="https://"></label>' +
         '<label class="field full"><span class="lbl">备注</span><textarea id="in-notes" rows="3" placeholder="内推人、薪资范围、面试准备等"></textarea></label>' +
@@ -716,6 +733,7 @@ function openDetail(id, opener){
   $('#in-company').value = a.company || '';
   $('#in-role').value = a.role || '';
   $('#in-date').value = a.appliedOn;
+  $('#in-counted').checked = isCounted(a);
   $('#in-loc').value = a.location || '';
   $('#in-link').value = a.link || '';
   $('#in-notes').value = a.notes || '';
@@ -737,7 +755,7 @@ function renderTimeline(){
   const u = safeUrl(a.link);
   $('#m-link').innerHTML = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">打开职位链接 ↗</a>' : '';
   const ev = a.events || [];
-  $('#tl').innerHTML = '<li class="k-applied"><div class="tl-body"><b>已投递</b> <span class="muted mono">' + fmt(a.appliedOn) + '</span></div></li>' +
+  $('#tl').innerHTML = '<li class="k-applied"><div class="tl-body">' + (isCounted(a) ? '<b>已投递</b> <span class="muted mono">' + fmt(a.appliedOn) + '</span>' : '<b>没有投递记录</b> <span class="muted mono">不计入投递数</span>') + '</div></li>' +
     ev.map(function(e){
       const k = KINDS[e.kind] || { label:e.kind };
       return '<li class="k-' + esc(e.kind) + (e.done ? ' is-done' : '') + '"><div class="tl-body"><b>' + esc(k.label) + '</b> <span class="muted mono">' + short(e.date) + '</span>' +
@@ -777,7 +795,7 @@ async function submitInfo(){
     await save(() => S.db.doc('apps/' + a.id).update({
       company: company, role: $('#in-role').value.trim(),
       track: document.querySelector('input[name=in-track]:checked').value,
-      appliedOn: isDate($('#in-date').value) ? $('#in-date').value : a.appliedOn,
+      appliedOn: isDate($('#in-date').value) ? $('#in-date').value : a.appliedOn, uncounted: !$('#in-counted').checked,
       location: $('#in-loc').value.trim(), link: safeUrl($('#in-link').value.trim()), notes: $('#in-notes').value.trim(),
       updatedAt: new Date().toISOString()
     }));
@@ -815,9 +833,10 @@ function findApp(list, company, role){
   return m.slice().sort((a, b) => a.appliedOn < b.appliedOn ? 1 : -1)[0];
 }
 
-async function applyItems(items){
+async function applyItems(items, opt){
+  const fromMail = !!(opt && opt.mail);
   const local = S.apps.map(a => ({ id:a.id, company:a.company, role:a.role || '', appliedOn:a.appliedOn, events:(a.events || []).map(e => Object.assign({}, e)) }));
-  const res = { created:0, added:0, skipped:0 };
+  const res = { created:0, added:0, skipped:0, uncounted:0 };
   for (const it of items){
     const app = findApp(local, it.company, it.role);
     let ev = null;
@@ -832,6 +851,7 @@ async function applyItems(items){
       const ref = S.db.collection('apps').doc();
       const data = { company: it.company, role: it.role || '', track: it.track === 'intern' ? 'intern' : 'ng', appliedOn: it.date, link:'', location:'', notes: (!ev && it.note) ? it.note : '', events: ev ? [ev] : [], createdAt: now, updatedAt: now };
       if (it.src) data.src = it.src;
+      if (fromMail && it.kind === 'rejected'){ data.uncounted = true; res.uncounted++; }   // 拒信找不到对应的投递：记下，但不当成一次投递
       await save(() => ref.set(data));
       local.push({ id: ref.id, company: it.company, role: it.role || '', appliedOn: it.date, events: ev ? [ev] : [] });
       res.created++;
@@ -1011,7 +1031,7 @@ function mailRow(el){
 function syncMailItem(el){
   const r = mailRow(el);
   const hit = r.company ? findApp(S.apps, r.company, r.role) : null;
-  el.querySelector('[data-f=match]').textContent = !r.company ? '' : hit ? '· 已有投递，' + (r.kind === 'applied' ? '会跳过' : '会添加进展') : '· 新建投递';
+  el.querySelector('[data-f=match]').textContent = !r.company ? '' : hit ? '· 已有投递，' + (r.kind === 'applied' ? '会跳过' : '会添加进展') : r.kind === 'rejected' ? '· 没有对应的投递，会记下这封拒信，但不计入投递数' : '· 新建投递';
   el.classList.toggle('off', !r.on);
 }
 function syncMailSel(){
@@ -1029,9 +1049,10 @@ async function saveMail(){
   const btn = $('#mail-save'); btn.disabled = true;
   const syncDone = S.modal && S.modal.type === 'sync' && !S.modal.partial;
   try {
-    const r = await applyItems(rows);
+    const r = await applyItems(rows, { mail:true });
     const parts = [];
-    if (r.created) parts.push('新建 ' + r.created + ' 条投递');
+    if (r.created - r.uncounted) parts.push('新建 ' + (r.created - r.uncounted) + ' 条投递');
+    if (r.uncounted) parts.push(r.uncounted + ' 封拒信没有对应的投递，已记下但不计入投递数');
     if (r.added) parts.push('添加 ' + r.added + ' 条进展');
     if (r.skipped) parts.push('跳过 ' + r.skipped + ' 条已有投递');
     if (syncDone) { try { await save(() => S.db.doc('meta/mailsync').set({ lastSync: todayStr() })); } catch(e){} }
@@ -1350,7 +1371,7 @@ function skLayout(flows){
 function skModel(o){
   const t = todayStr();
   const from = o.range === 'all' ? '' : addDays(t, -(Number(o.range) - 1));
-  const list = S.apps.filter(a => (o.track === 'all' || trackOf(a) === o.track) && (!from || a.appliedOn >= from));
+  const list = S.apps.filter(a => isCounted(a) && (o.track === 'all' || trackOf(a) === o.track) && (!from || a.appliedOn >= from));
   return skLayout(skFlows(list));
 }
 
@@ -1499,7 +1520,7 @@ function makeLocalDB(){
       get: async () => snap(), onSnapshot: next => sub(() => next(snap())) };
     return q;
   }
-  const FIELDS = ['company','role','track','appliedOn','link','location','notes','events','src','createdAt','updatedAt'];
+  const FIELDS = ['company','role','track','appliedOn','link','location','notes','events','src','uncounted','createdAt','updatedAt'];
   return {
     doc: docRef, collection: colRef,
     exportAll: function(){
