@@ -351,6 +351,10 @@ a{color:var(--focus)}
         <option value="rejected">已拒</option>
         <option value="withdrawn">已撤回</option>
       </select>
+      <select id="sort" aria-label="排序">
+        <option value="applied">按投递日期</option>
+        <option value="recent">按最近进展</option>
+      </select>
     </div>
     <div id="log"></div>
   </section>
@@ -398,7 +402,7 @@ const KINDS = {
 const STATUS = { applied:'已投递', oa:'OA', interview:'面试中', offer:'Offer', rejected:'已拒', withdrawn:'已撤回' };
 const TRACK = { ng:'New Grad', intern:'Intern' };
 
-const S = { db:null, sample:null, mcp:null, dl:null, mailsync:{}, settings:{}, mode:'cloud', apps:[], loaded:false, goal:5, track:'all', q:'', status:'all', modal:null, readDay:null, lastFocus:null };
+const S = { db:null, sample:null, mcp:null, dl:null, mailsync:{}, settings:{}, mode:'cloud', apps:[], loaded:false, goal:5, track:'all', q:'', status:'all', sort:'applied', modal:null, readDay:null, lastFocus:null };
 (function(){ const t = ls.get('jt-track'); if (t === 'ng' || t === 'intern') S.track = t; })();
 
 const trackOf = a => a.track === 'intern' ? 'intern' : 'ng';
@@ -449,7 +453,7 @@ function renderToday(L, t){
     '<div class="stats"><div><b>' + week + '</b>近 7 天投递</div><div><b>' + (week/7).toFixed(1) + '</b>日均</div><div><b>' + streak + '</b>连续投递天数</div></div>';
 }
 
-function renderFunnel(L){
+function renderFunnel(L, U){
   const total = L.length;
   const oa = L.filter(a => reached(a, ['oa'])).length;
   const iv = L.filter(a => reached(a, ['screen','interview'])).length;
@@ -457,6 +461,7 @@ function renderFunnel(L){
   const rej = L.filter(a => statusOf(a) === 'rejected').length;
   const wd = L.filter(a => statusOf(a) === 'withdrawn').length;
   const wait = L.filter(a => statusOf(a) === 'applied').length;
+  const rejU = (U || []).filter(a => statusOf(a) === 'rejected').length;   // 没有投递记录的拒信：不算投递，但拒信还是要数
   const rows = [['投递', total, 'var(--sa-fg)'], ['OA', oa, 'var(--so-fg)'], ['面试', iv, 'var(--si-fg)'], ['Offer', of, 'var(--sf-fg)']];
   $('#funnel-total').textContent = total ? '共 ' + total + ' 个投递' : '';
   $('#funnel').innerHTML = '<div class="funnel">' + rows.map(function(r, i){
@@ -464,7 +469,7 @@ function renderFunnel(L){
     const pct = i === 0 ? '' : (total ? Math.round(r[1] / total * 100) + '%' : '–');
     return '<div class="f-row"><span class="nm">' + r[0] + '</span><div class="f-bar"><i style="width:' + w + '%;background:' + r[2] + '"></i></div><span class="n">' + r[1] + '</span><span class="p">' + pct + '</span></div>';
   }).join('') + '</div>' +
-  '<div class="f-foot"><span>暂无回音 <b>' + wait + '</b></span><span>已拒 <b>' + rej + '</b></span><span>主动撤回 <b>' + wd + '</b></span></div>';
+  '<div class="f-foot"><span>暂无回音 <b>' + wait + '</b></span><span>已拒 <b>' + rej + '</b>' + (rejU ? '<span class="muted">（另有 ' + rejU + ' 封没有投递记录）</span>' : '') + '</span><span>主动撤回 <b>' + wd + '</b></span></div>';
 }
 
 /* ---------- render: chart ---------- */
@@ -569,6 +574,7 @@ function renderLog(L, t){
   }
   if (!list.length){ $('#log').innerHTML = '<div class="log-empty muted">没有符合条件的投递。</div>'; return; }
   const main = list.filter(isCounted), extra = list.filter(a => !isCounted(a));
+  const lastOf = a => (a.events || []).reduce((m, e) => isDate(e.date) && e.date > m ? e.date : m, '') || a.appliedOn;
   const row = function(a){
     const ev = a.events || [], last = ev[ev.length - 1];
     let lastTxt = '';
@@ -576,29 +582,41 @@ function renderLog(L, t){
       lastTxt = (KINDS[last.kind] ? KINDS[last.kind].label : last.kind) + ' · ' + short(last.date) + (last.due && !last.done ? ' → ' + short(last.due) : '') + (last.note ? ' · ' + last.note : '');
     }
     return '<li><button type="button" class="row" data-open="' + esc(a.id) + '">' +
-      '<span class="r-main"><b>' + esc(a.company) + '</b><span>' + esc(a.role || '未填职位') + '</span></span>' +
+      '<span class="r-main"><b>' + esc(a.company) + '</b><span>' + esc(a.role || '未填职位') + (isCounted(a) ? '' : ' · 无投递记录') + '</span></span>' +
       '<span class="tag ' + trackOf(a) + '">' + TRACK[trackOf(a)] + '</span>' +
       '<span class="pill st-' + statusOf(a) + '">' + STATUS[statusOf(a)] + '</span>' +
       '<span class="r-last">' + esc(lastTxt) + '</span></button></li>';
   };
-  let html = '', cur = null;
-  const counts = {}; main.forEach(a => { counts[a.appliedOn] = (counts[a.appliedOn] || 0) + 1; });
-  main.forEach(function(a){
-    if (a.appliedOn !== cur){
-      if (cur !== null) html += '</ul>';
-      cur = a.appliedOn;
-      const dd = diffDays(cur, t);
-      const nm = dd === 0 ? '今天' : dd === -1 ? '昨天' : fmt(cur);
-      html += '<div class="day-h"><b>' + nm + (dd === 0 || dd === -1 ? ' · ' + short(cur) : '') + '</b><span>' + counts[cur] + ' 个</span></div><ul class="rows">';
+  // 按某个日期分组，每组一个标题
+  const section = function(arr, keyOf){
+    if (!arr.length) return '';
+    const counts = {}; arr.forEach(a => { const k = keyOf(a); counts[k] = (counts[k] || 0) + 1; });
+    let cur = null, out = '';
+    arr.forEach(function(a){
+      const k = keyOf(a);
+      if (k !== cur){
+        if (cur !== null) out += '</ul>';
+        cur = k;
+        const dd = diffDays(k, t);
+        out += '<div class="day-h"><b>' + (dd === 0 ? '今天' : dd === -1 ? '昨天' : fmt(k)) + (dd === 0 || dd === -1 ? ' · ' + short(k) : '') + '</b><span>' + counts[k] + ' 个</span></div><ul class="rows">';
+      }
+      out += row(a);
+    });
+    return out + '</ul>';
+  };
+  let html;
+  if (S.sort === 'recent'){
+    // 按最近一次进展的日期排，新的拒信 / OA / 面试排在最前面；没有投递记录的也混在里面，名字后面标出来
+    list.sort((a, b) => lastOf(a) < lastOf(b) ? 1 : lastOf(a) > lastOf(b) ? -1 : (a.updatedAt || '') < (b.updatedAt || '') ? 1 : -1);
+    html = section(list, lastOf);
+  } else {
+    html = section(main, a => a.appliedOn);
+    if (extra.length){
+      // 邮件里出现、但没有对应投递记录的（比如只收到拒信）：不计入投递数，单独放在最下面
+      extra.sort((a, b) => lastOf(a) < lastOf(b) ? 1 : lastOf(a) > lastOf(b) ? -1 : 0);
+      html = '<p class="hint log-note">另有 ' + extra.length + ' 条记录没有投递记录（多半是只收到拒信的），不计入投递数，排在最下面。<button type="button" class="btn sm" data-act="sort-recent">按最近进展看</button></p>' + html +
+        '<div class="day-h"><b>没有投递记录</b><span>' + extra.length + ' 个 · 不计入投递数</span></div><ul class="rows">' + extra.map(row).join('') + '</ul>';
     }
-    html += row(a);
-  });
-  if (main.length) html += '</ul>';
-  if (extra.length){
-    // 邮件里出现、但没有对应投递记录的（比如只收到拒信）：留在这里，不计入投递数
-    const lastOf = a => { const ev = a.events || []; return ev.length ? ev[ev.length - 1].date : a.appliedOn; };
-    extra.sort((a, b) => lastOf(a) < lastOf(b) ? 1 : lastOf(a) > lastOf(b) ? -1 : 0);
-    html += '<div class="day-h"><b>没有投递记录</b><span>' + extra.length + ' 个 · 不计入投递数</span></div><ul class="rows">' + extra.map(row).join('') + '</ul>';
   }
   $('#log').innerHTML = html;
 }
@@ -609,8 +627,8 @@ function render(){
   $('#eyebrow').textContent = fmt(t) + (gd ? (gdd > 0 ? ' · 距离毕业 ' + gdd + ' 天' : gdd === 0 ? ' · 今天毕业' : ' · 已毕业 ' + (-gdd) + ' 天') : '');
   document.querySelectorAll('[data-track]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.track === S.track)));
   const L = S.apps.filter(a => S.track === 'all' || trackOf(a) === S.track);
-  const La = L.filter(isCounted);
-  renderToday(La, t); renderFunnel(La); renderChart(La, t); renderUpcoming(L, t); renderLog(L, t); renderGrad(t);
+  const La = L.filter(isCounted), Lu = L.filter(a => !isCounted(a));
+  renderToday(La, t); renderFunnel(La, Lu); renderChart(La, t); renderUpcoming(L, t); renderLog(L, t); renderGrad(t);
   if (S.modal && S.modal.type === 'detail') renderTimeline();
 }
 
@@ -1369,12 +1387,13 @@ function skLayout(flows){
   return { nodes:live, links:links, k:k, total:total };
 }
 
-function skModel(o){
+function skList(o, counted){
   const t = todayStr();
   const from = o.range === 'all' ? '' : addDays(t, -(Number(o.range) - 1));
-  const list = S.apps.filter(a => isCounted(a) && (o.track === 'all' || trackOf(a) === o.track) && (!from || a.appliedOn >= from));
-  return skLayout(skFlows(list));
+  return S.apps.filter(a => isCounted(a) === counted && (o.track === 'all' || trackOf(a) === o.track) && (!from || a.appliedOn >= from));
 }
+function skModel(o){ return skLayout(skFlows(skList(o, true))); }
+const SK_HINT = '保存的是 PNG 图片（2400 × 1400）。回音 = 收到过 OA、面试、Offer 或拒信；撤回后没有任何回音的，不算有回音。';
 
 function skSVG(model, o){
   const T = SK_TEXT[o.lang], total = model.total;
@@ -1423,7 +1442,7 @@ function openSankey(opener){
       sel('sk-lang', '图中文字', [['en', 'English'], ['zh', '中文']], m.lang) +
       '<button type="button" class="btn primary" id="sk-save" data-act="sk-save">保存图片</button></div>' +
     '<div class="sk-fig" id="sk-fig"></div>' +
-    '<p class="sk-note" id="sk-hint">保存的是 PNG 图片（2400 × 1400）。回音 = 收到过 OA、面试、Offer 或拒信；撤回后没有任何回音的，不算有回音。</p>' +
+    '<p class="sk-note" id="sk-hint">' + SK_HINT + '</p>' +
     '<details class="sk-data"><summary>查看数据表</summary><div class="sk-tbl" id="sk-table"></div></details></div>', opener);
   renderSankey();
 }
@@ -1431,6 +1450,8 @@ function openSankey(opener){
 function renderSankey(){
   const m = S.modal; if (!m || m.type !== 'sankey') return;
   const model = skModel(m), box = $('#sk-fig'), T = SK_TEXT[m.lang];
+  const un = skList(m, false), unRej = un.filter(a => statusOf(a) === 'rejected').length;
+  $('#sk-hint').textContent = SK_HINT + (un.length ? ' 没有投递记录的 ' + un.length + ' 条（其中拒信 ' + unRej + ' 封）不算投递，没有画进图里。' : '');
   $('#sk-save').disabled = !model.total;
   if (!model.total){
     box.innerHTML = '<p class="empty-note" style="padding:20px">这个范围里还没有投递记录。</p>';
@@ -1718,6 +1739,7 @@ document.addEventListener('click', function(e){
     else if (a === 'del-app') deleteApp(act);
     else if (a === 'open-todo') openTodo(act);
     else if (a === 'open-mail') openMail(act);
+    else if (a === 'sort-recent'){ S.sort = 'recent'; $('#sort').value = 'recent'; render(); }
     else if (a === 'open-sankey') openSankey(act);
     else if (a === 'sk-save') saveSankey();
     else if (a === 'open-sync') openSync(act);
@@ -1759,7 +1781,13 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('change', function(e){
-  if (e.target.id === 'status'){ S.status = e.target.value; render(); }
+  if (e.target.id === 'status'){
+    S.status = e.target.value;
+    // 看 OA / 面试 / Offer / 拒信 / 撤回时，最关心的是最近的进展，自动按最近进展排；回到全部或已投递就按投递日期排
+    S.sort = ['oa', 'interview', 'offer', 'rejected', 'withdrawn'].indexOf(S.status) >= 0 ? 'recent' : 'applied';
+    $('#sort').value = S.sort; render();
+  }
+  else if (e.target.id === 'sort'){ S.sort = e.target.value === 'recent' ? 'recent' : 'applied'; render(); }
   else if (e.target.id === 'sk-track' || e.target.id === 'sk-range' || e.target.id === 'sk-lang'){
     if (!S.modal || S.modal.type !== 'sankey') return;
     S.modal[e.target.id.slice(3)] = e.target.value;
@@ -1798,7 +1826,7 @@ $('#chart').addEventListener('pointerover', function(e){ const h = e.target.clos
 $('#chart').addEventListener('click', function(e){ const h = e.target.closest('.hit'); if (h) showDay(h.dataset.day); });
 
 /* ---------- boot ---------- */
-$('#status').value = S.status;
+$('#status').value = S.status; $('#sort').value = S.sort;
 renderFoot();
 render();
 (async function(){
