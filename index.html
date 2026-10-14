@@ -402,9 +402,10 @@ const S = { db:null, sample:null, mcp:null, dl:null, mailsync:{}, settings:{}, m
 (function(){ const t = ls.get('jt-track'); if (t === 'ng' || t === 'intern') S.track = t; })();
 
 const trackOf = a => a.track === 'intern' ? 'intern' : 'ng';
-/* Only an application with a real application record counts toward the totals (today, funnel, chart,
-   flow chart). A rejection email that matches no application is kept in the log as a record marked
-   `uncounted`, so a rejection letter never adds to the number of applications. */
+/* Only an application record counts toward the totals (today, funnel, chart, flow chart): one added with
+   "+ 记录投递" or made from an application-confirmation email. A record that only exists because an
+   OA / interview / offer / rejection was added for a company with no application (by hand with
+   "+ 添加待办", or from an email) is kept in the log marked `uncounted`. */
 const isCounted = a => a.uncounted !== true;
 /* Type rule: only the job title decides. It is an Intern only if the title says so; everything else
    (including an unknown title) is New Grad / full-time. */
@@ -724,7 +725,7 @@ function openDetail(id, opener){
           '<label class="seg-opt"><input type="radio" name="in-track" value="intern"><span>Intern</span></label></div></div>' +
         '<label class="field"><span class="lbl">投递日期</span><input type="date" id="in-date"></label>' +
         '<label class="chk"><input type="checkbox" id="in-counted">计入投递数</label>' +
-        '<p class="hint full" style="margin:-4px 0 0">取消勾选后，这条不会算进今天投递、漏斗、最近 21 天和进度图。同步邮箱时，找不到对应投递的拒信会新建一条这样的记录，默认不计入；确实是你在这天投的，就勾上，并把投递日期改成真实日期。</p>' +
+        '<p class="hint full" style="margin:-4px 0 0">取消勾选后，这条不会算进今天投递、漏斗、最近 21 天和进度图。靠「+ 添加待办」或邮件（OA、面试、Offer、拒信）新建、没有投递记录的条目，默认不计入；确实是你在这天投的，就勾上，并把投递日期改成真实日期。</p>' +
         '<label class="field"><span class="lbl">地点</span><input id="in-loc"></label>' +
         '<label class="field"><span class="lbl">职位链接</span><input id="in-link" type="text" inputmode="url" placeholder="https://"></label>' +
         '<label class="field full"><span class="lbl">备注</span><textarea id="in-notes" rows="3" placeholder="内推人、薪资范围、面试准备等"></textarea></label>' +
@@ -833,8 +834,7 @@ function findApp(list, company, role){
   return m.slice().sort((a, b) => a.appliedOn < b.appliedOn ? 1 : -1)[0];
 }
 
-async function applyItems(items, opt){
-  const fromMail = !!(opt && opt.mail);
+async function applyItems(items){
   const local = S.apps.map(a => ({ id:a.id, company:a.company, role:a.role || '', appliedOn:a.appliedOn, events:(a.events || []).map(e => Object.assign({}, e)) }));
   const res = { created:0, added:0, skipped:0, uncounted:0 };
   for (const it of items){
@@ -851,7 +851,7 @@ async function applyItems(items, opt){
       const ref = S.db.collection('apps').doc();
       const data = { company: it.company, role: it.role || '', track: it.track === 'intern' ? 'intern' : 'ng', appliedOn: it.date, link:'', location:'', notes: (!ev && it.note) ? it.note : '', events: ev ? [ev] : [], createdAt: now, updatedAt: now };
       if (it.src) data.src = it.src;
-      if (fromMail && it.kind === 'rejected'){ data.uncounted = true; res.uncounted++; }   // 拒信找不到对应的投递：记下，但不当成一次投递
+      if (ev){ data.uncounted = true; res.uncounted++; }   // 只有 OA / 面试 / Offer / 拒信、没有对应的投递：记下，但不当成一次投递
       await save(() => ref.set(data));
       local.push({ id: ref.id, company: it.company, role: it.role || '', appliedOn: it.date, events: ev ? [ev] : [] });
       res.created++;
@@ -889,7 +889,7 @@ function syncTodo(){
   const c = $('#todo-company').value.trim();
   const exists = c && findApp(S.apps, c, '');
   $('#todo-track-wrap').hidden = !c || !!exists;
-  $('#todo-hint').textContent = !c ? '日期可以先空着，之后再补。' : exists ? '已有这家公司的投递，会在它下面添加进展。' : '还没有这家公司的投递记录，会同时新建一条。';
+  $('#todo-hint').textContent = !c ? '日期可以先空着，之后再补。' : exists ? '已有这家公司的投递，会在它下面添加进展。' : '还没有这家公司的投递记录，会新建一条，但不计入投递数。要计入，请先用「+ 记录投递」。';
 }
 async function submitTodo(){
   const company = $('#todo-company').value.trim();
@@ -898,8 +898,9 @@ async function submitTodo(){
   const btn = $('#todo-submit'); btn.disabled = true;
   try {
     const tr = document.querySelector('input[name=todo-track]:checked');
+    const known = !!findApp(S.apps, company, '');
     await applyItems([{ company: company, role: '', track: tr ? tr.value : 'ng', kind: $('#todo-kind').value, date: todayStr(), due: isDate(due) ? due : '', note: $('#todo-note').value.trim() }]);
-    closeModal(); toast('已添加待办：' + company);
+    closeModal(); toast('已添加待办：' + company + (known ? '' : '（没有投递记录，不计入投递数）'));
   } catch(e){ fail(e); btn.disabled = false; }
 }
 
@@ -1031,7 +1032,7 @@ function mailRow(el){
 function syncMailItem(el){
   const r = mailRow(el);
   const hit = r.company ? findApp(S.apps, r.company, r.role) : null;
-  el.querySelector('[data-f=match]').textContent = !r.company ? '' : hit ? '· 已有投递，' + (r.kind === 'applied' ? '会跳过' : '会添加进展') : r.kind === 'rejected' ? '· 没有对应的投递，会记下这封拒信，但不计入投递数' : '· 新建投递';
+  el.querySelector('[data-f=match]').textContent = !r.company ? '' : hit ? '· 已有投递，' + (r.kind === 'applied' ? '会跳过' : '会添加进展') : r.kind === 'applied' ? '· 新建投递' : '· 没有对应的投递，会记下这封' + (r.kind === 'rejected' ? '拒信' : '邮件') + '，但不计入投递数';
   el.classList.toggle('off', !r.on);
 }
 function syncMailSel(){
@@ -1049,10 +1050,10 @@ async function saveMail(){
   const btn = $('#mail-save'); btn.disabled = true;
   const syncDone = S.modal && S.modal.type === 'sync' && !S.modal.partial;
   try {
-    const r = await applyItems(rows, { mail:true });
+    const r = await applyItems(rows);
     const parts = [];
     if (r.created - r.uncounted) parts.push('新建 ' + (r.created - r.uncounted) + ' 条投递');
-    if (r.uncounted) parts.push(r.uncounted + ' 封拒信没有对应的投递，已记下但不计入投递数');
+    if (r.uncounted) parts.push(r.uncounted + ' 封邮件没有对应的投递，已记下但不计入投递数');
     if (r.added) parts.push('添加 ' + r.added + ' 条进展');
     if (r.skipped) parts.push('跳过 ' + r.skipped + ' 条已有投递');
     if (syncDone) { try { await save(() => S.db.doc('meta/mailsync').set({ lastSync: todayStr() })); } catch(e){} }
