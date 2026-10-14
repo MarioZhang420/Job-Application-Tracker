@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="description" content="求职进度追踪器：每天的投递、OA 和面试，毕业倒计时和 OPT 提醒。数据只保存在你的浏览器里。">
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>求职进度</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -21,6 +20,7 @@
   --sf-bg:#D5EFDB; --sf-fg:#17682F;
   --sr-bg:#F6DCDC; --sr-fg:#9F2A2A;
   --warn:#B3261E; --warn-bg:#F9E1DF;
+  --img-bg:#FCFCFB;
   --font-display:"Bricolage Grotesque","PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
   --font-body:system-ui,-apple-system,"PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
   --font-mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
@@ -235,6 +235,20 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 .mail-src{margin:8px 0 0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 .mail-src a{white-space:nowrap}
 .file-btn{display:inline-flex;align-items:center;cursor:pointer}
+.modal.wide{max-width:1040px}
+.sk-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.sk-bar .field{flex:1 1 150px}
+.sk-fig{background:var(--img-bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.sk-scroll{overflow-x:auto}
+.sk-scroll svg{display:block;width:100%;min-width:860px;height:auto}
+.sk-fig img{display:block;width:100%;height:auto}
+.sk-note{margin:0;font-size:12px;color:var(--muted)}
+.sk-data summary{cursor:pointer;font-size:13px;color:var(--muted)}
+.sk-data .sk-tbl{overflow-x:auto;margin-top:8px}
+.sk-data table{border-collapse:collapse;width:100%;font-size:13px}
+.sk-data th,.sk-data td{text-align:left;font-weight:400;padding:5px 8px;border-bottom:1px solid var(--line-soft)}
+.sk-data th{color:var(--muted);font-size:12px}
+.sk-data td.n,.sk-data th.n{text-align:right;font-variant-numeric:tabular-nums}
 .stack{display:flex;flex-direction:column;gap:12px}
 .form .chk{grid-column:1/-1;margin:0}
 .when.ok{background:var(--sf-bg);color:var(--sf-fg)}
@@ -285,6 +299,7 @@ a{color:var(--focus)}
         <button type="button" data-track="ng" aria-pressed="false">New Grad</button>
         <button type="button" data-track="intern" aria-pressed="false">Intern</button>
       </div>
+      <button type="button" class="btn" id="btn-sankey" data-act="open-sankey">进度图</button>
       <button type="button" class="btn" id="btn-sync" data-act="open-sync" hidden>同步邮箱</button>
       <button type="button" class="btn" id="btn-mail" data-act="open-mail">粘贴邮件</button>
       <button type="button" class="btn primary" id="btn-add" data-act="open-add">+ 记录投递</button>
@@ -383,7 +398,7 @@ const KINDS = {
 const STATUS = { applied:'已投递', oa:'OA', interview:'面试中', offer:'Offer', rejected:'已拒', withdrawn:'已撤回' };
 const TRACK = { ng:'New Grad', intern:'Intern' };
 
-const S = { db:null, sample:null, mcp:null, mailsync:{}, settings:{}, mode:'cloud', apps:[], loaded:false, goal:5, track:'all', q:'', status:'all', modal:null, readDay:null, lastFocus:null };
+const S = { db:null, sample:null, mcp:null, dl:null, mailsync:{}, settings:{}, mode:'cloud', apps:[], loaded:false, goal:5, track:'all', q:'', status:'all', modal:null, readDay:null, lastFocus:null };
 (function(){ const t = ls.get('jt-track'); if (t === 'ng' || t === 'intern') S.track = t; })();
 
 const trackOf = a => a.track === 'intern' ? 'intern' : 'ng';
@@ -587,6 +602,7 @@ function render(){
 function openModal(html, opener){
   S.lastFocus = opener || document.activeElement;
   $('#modal').innerHTML = html;
+  $('#modal').classList.toggle('wide', !!(S.modal && S.modal.type === 'sankey'));
   $('#overlay').hidden = false;
   const f = $('#modal input:not([type=radio]), #modal textarea, #modal select');
   if (f && S.modal && S.modal.type === 'add') f.focus();
@@ -595,6 +611,7 @@ function closeModal(){
   if (S.modal && S.modal.ctl) S.modal.ctl.abort();
   S.modal = null;
   $('#overlay').hidden = true;
+  $('#modal').classList.remove('wide');
   $('#modal').innerHTML = '';
   if (S.lastFocus && S.lastFocus.focus && document.contains(S.lastFocus)) S.lastFocus.focus();
 }
@@ -1252,6 +1269,191 @@ async function runSync(){
   }
 }
 
+/* ---------- progress flow (Sankey) and PNG export ---------- */
+const SK = {
+  W:1200, H:700, left:150, right:170, top:76, bottom:40, nodeW:14, gap:12, labelH:50, bg:'#fcfcfb',
+  font:'system-ui,-apple-system,"Segoe UI","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif',
+  ink:'#0b0b0b', ink2:'#52514e'
+};
+/* The image is its own light surface. Stages are one blue ramp (ordinal), outcomes use the status
+   colors (offer = good, rejected = critical), the rest are neutrals. */
+const SK_NODES = [
+  { id:'apps',      col:0, color:'#52514e' },
+  { id:'replies',   col:1, color:'#5598e7' },
+  { id:'noreply',   col:1, color:'#c3c2b7' },
+  { id:'oa',        col:2, color:'#2a78d6' },
+  { id:'iv',        col:3, color:'#1c5cab' },
+  { id:'offer',     col:4, color:'#0ca30c' },
+  { id:'pending',   col:4, color:'#86b6ef' },
+  { id:'rejected',  col:4, color:'#d03b3b' },
+  { id:'withdrawn', col:4, color:'#898781' }
+];
+const SK_TEXT = {
+  en: { apps:'Applications', replies:'Replies', noreply:'No Replies', oa:'OA', iv:'Interviews', offer:'Offers', pending:'In Progress', rejected:'Rejected', withdrawn:'Withdrawn',
+    title:n => 'Job search · ' + n + ' application' + (n === 1 ? '' : 's'), all:'All types', ng:'New Grad', intern:'Intern', rAll:'All time', rN:n => 'Last ' + n + ' days', asof:'as of ',
+    foot:'Reply = got an OA, interview, offer or rejection. Percentages are shares of all applications.', alt:'Job search flow', from:'From', to:'To', n:'Count' },
+  zh: { apps:'投递', replies:'有回音', noreply:'没回音', oa:'OA', iv:'面试', offer:'Offer', pending:'进行中', rejected:'被拒', withdrawn:'撤回',
+    title:n => '求职进度 · 共 ' + n + ' 个投递', all:'全部类型', ng:'New Grad', intern:'Intern', rAll:'全部时间', rN:n => '最近 ' + n + ' 天', asof:'截至 ',
+    foot:'回音 = 收到过 OA、面试、Offer 或拒信。百分比是占全部投递的比例。', alt:'求职进度流向图', from:'从', to:'到', n:'数量' }
+};
+const skr = v => Math.round(v * 10) / 10;
+
+// Each application takes one path: apps → (no reply | reply → [OA] → [interview] → outcome)
+function skFlows(list){
+  const flows = {};
+  const add = (a, b) => { const k = a + '>' + b; flows[k] = (flows[k] || 0) + 1; };
+  list.forEach(function(a){
+    const kinds = (a.events || []).map(e => e.kind);
+    if (!kinds.length){ add('apps', 'noreply'); return; }
+    if (kinds.every(k => k === 'withdrawn')){ add('apps', 'withdrawn'); return; }   // pulled out before any reply
+    const last = kinds[kinds.length - 1];
+    const out = kinds.indexOf('offer') >= 0 ? 'offer' : last === 'rejected' ? 'rejected' : last === 'withdrawn' ? 'withdrawn' : 'pending';
+    add('apps', 'replies');
+    let prev = 'replies';
+    if (kinds.indexOf('oa') >= 0){ add(prev, 'oa'); prev = 'oa'; }
+    if (kinds.indexOf('screen') >= 0 || kinds.indexOf('interview') >= 0){ add(prev, 'iv'); prev = 'iv'; }
+    add(prev, out);
+  });
+  return flows;
+}
+
+function skLayout(flows){
+  const nodes = SK_NODES.map(n => ({ id:n.id, col:n.col, color:n.color, in:0, out:0 }));
+  const by = {}; nodes.forEach(n => { by[n.id] = n; });
+  const order = {}; SK_NODES.forEach((n, i) => { order[n.id] = i; });
+  const links = Object.keys(flows).map(k => { const p = k.split('>'); return { s:by[p[0]], t:by[p[1]], v:flows[k] }; });
+  links.sort((a, b) => order[a.s.id] - order[b.s.id] || order[a.t.id] - order[b.t.id]);
+  links.forEach(l => { l.s.out += l.v; l.t.in += l.v; });
+  nodes.forEach(n => { n.v = Math.max(n.in, n.out); });
+  const live = nodes.filter(n => n.v > 0), total = by.apps.v;
+  const ph = SK.H - SK.top - SK.bottom;
+  const cols = [0, 1, 2, 3, 4].map(c => live.filter(n => n.col === c));
+  const need = k => Math.max.apply(null, cols.map(c => c.reduce((s, n) => s + Math.max(n.v * k, SK.labelH), 0) + Math.max(0, c.length - 1) * SK.gap));
+  let k = total ? ph / total : 0;
+  for (let i = 0; i < 500 && k > 0.05 && need(k) > ph; i++) k *= 0.98;
+  cols.forEach(function(c){
+    let y = SK.top;
+    c.forEach(function(n){ const slot = Math.max(n.v * k, SK.labelH); n.h = n.v * k; n.y = y + (slot - n.h) / 2; y += slot + SK.gap; });
+  });
+  const dx = (SK.W - SK.left - SK.right - SK.nodeW) / 4;
+  live.forEach(n => { n.x = SK.left + n.col * dx; });
+  const cy = n => n.y + n.h / 2;
+  live.forEach(function(n){
+    let o = 0;
+    links.filter(l => l.s === n).sort((a, b) => cy(a.t) - cy(b.t)).forEach(l => { l.sy = n.y + o + l.v * k / 2; o += l.v * k; });
+    o = 0;
+    links.filter(l => l.t === n).sort((a, b) => cy(a.s) - cy(b.s)).forEach(l => { l.ty = n.y + o + l.v * k / 2; o += l.v * k; });
+  });
+  return { nodes:live, links:links, k:k, total:total };
+}
+
+function skModel(o){
+  const t = todayStr();
+  const from = o.range === 'all' ? '' : addDays(t, -(Number(o.range) - 1));
+  const list = S.apps.filter(a => (o.track === 'all' || trackOf(a) === o.track) && (!from || a.appliedOn >= from));
+  return skLayout(skFlows(list));
+}
+
+function skSVG(model, o){
+  const T = SK_TEXT[o.lang], total = model.total;
+  const pct = v => { const p = v / total * 100; return p > 0 && p < 1 ? '<1%' : Math.round(p) + '%'; };
+  const halo = 'paint-order="stroke" stroke="' + SK.bg + '" stroke-width="4" stroke-linejoin="round"';
+  let defs = '', links = '', nodes = '', text = '';
+  model.links.forEach(function(l, i){
+    const x0 = skr(l.s.x + SK.nodeW), x1 = skr(l.t.x), xm = skr((x0 + x1) / 2), sy = skr(l.sy), ty = skr(l.ty);
+    defs += '<linearGradient id="skg' + i + '" gradientUnits="userSpaceOnUse" x1="' + x0 + '" y1="0" x2="' + x1 + '" y2="0"><stop offset="0" stop-color="' + l.s.color + '"/><stop offset="1" stop-color="' + l.t.color + '"/></linearGradient>';
+    links += '<path d="M' + x0 + ' ' + sy + 'C' + xm + ' ' + sy + ' ' + xm + ' ' + ty + ' ' + x1 + ' ' + ty + '" fill="none" stroke="url(#skg' + i + ')" stroke-opacity=".38" stroke-width="' + skr(Math.max(l.v * model.k, 1)) + '"><title>' + esc(T[l.s.id] + ' → ' + T[l.t.id] + ': ' + l.v) + '</title></path>';
+  });
+  model.nodes.forEach(function(n){
+    nodes += '<rect x="' + skr(n.x) + '" y="' + skr(n.y) + '" width="' + SK.nodeW + '" height="' + skr(Math.max(n.h, 2)) + '" rx="2" fill="' + n.color + '"><title>' + esc(T[n.id] + ': ' + n.v + ' (' + pct(n.v) + ')') + '</title></rect>';
+    const first = n.col === 0, tx = skr(first ? n.x - 12 : n.x + SK.nodeW + 10), cy = n.y + n.h / 2, an = first ? 'end' : 'start';
+    text += '<text x="' + tx + '" y="' + skr(cy - 1) + '" text-anchor="' + an + '" font-size="24" font-weight="600" fill="' + SK.ink + '" ' + halo + '>' + n.v + '</text>' +
+      '<text x="' + tx + '" y="' + skr(cy + 18) + '" text-anchor="' + an + '" font-size="14" fill="' + SK.ink2 + '" ' + halo + '>' + esc(T[n.id]) + (first ? '' : ' · ' + pct(n.v)) + '</text>';
+  });
+  const trackLbl = T[o.track === 'ng' ? 'ng' : o.track === 'intern' ? 'intern' : 'all'];
+  const rangeLbl = o.range === 'all' ? T.rAll : T.rN(o.range);
+  text += '<text x="24" y="34" font-size="20" font-weight="600" fill="' + SK.ink + '">' + esc(T.title(total)) + '</text>' +
+    '<text x="24" y="56" font-size="14" fill="' + SK.ink2 + '">' + esc([trackLbl, rangeLbl, T.asof + todayStr()].join(' · ')) + '</text>' +
+    '<text x="24" y="' + (SK.H - 14) + '" font-size="12" fill="' + SK.ink2 + '">' + esc(T.foot) + '</text>';
+  const alt = T.alt + ': ' + model.nodes.map(n => T[n.id] + ' ' + n.v).join(', ');
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + SK.W + ' ' + SK.H + '" width="' + SK.W + '" height="' + SK.H + '" font-family=\'' + SK.font + '\' role="img" aria-label="' + esc(alt) + '">' +
+    '<rect width="' + SK.W + '" height="' + SK.H + '" fill="' + SK.bg + '"/><defs>' + defs + '</defs>' + links + nodes + text + '</svg>';
+}
+
+async function skPNG(svg){
+  const img = new Image();
+  await new Promise(function(res, rej){ img.onload = res; img.onerror = rej; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
+  const sc = 2, c = document.createElement('canvas'); c.width = SK.W * sc; c.height = SK.H * sc;
+  const g = c.getContext('2d'); g.fillStyle = SK.bg; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+  return await new Promise(function(res, rej){ c.toBlob(b => b ? res(b) : rej(new Error('png')), 'image/png'); });
+}
+
+function openSankey(opener){
+  if (!S.db) return;
+  S.modal = { type:'sankey', track:S.track, range:'all', lang: ls.get('jt-sk-lang') === 'zh' ? 'zh' : 'en', busy:false };
+  const m = S.modal;
+  const sel = (id, lbl, opts, cur) => '<label class="field"><span class="lbl">' + lbl + '</span><select id="' + id + '">' + opts.map(o => '<option value="' + o[0] + '"' + (o[0] === cur ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>';
+  openModal(
+    '<div class="m-head"><div><h3 id="m-title">进度图</h3><p>把投递到结果的流向画成一张图，可以保存成图片分享。</p></div><button type="button" class="btn sm" data-act="close">关闭</button></div>' +
+    '<div class="stack"><div class="sk-bar">' +
+      sel('sk-track', '类型', [['all', '全部'], ['ng', 'New Grad'], ['intern', 'Intern']], m.track) +
+      sel('sk-range', '投递日期', [['all', '全部时间'], ['30', '最近 30 天'], ['14', '最近 14 天'], ['7', '最近 7 天']], m.range) +
+      sel('sk-lang', '图中文字', [['en', 'English'], ['zh', '中文']], m.lang) +
+      '<button type="button" class="btn primary" id="sk-save" data-act="sk-save">保存图片</button></div>' +
+    '<div class="sk-fig" id="sk-fig"></div>' +
+    '<p class="sk-note" id="sk-hint">保存的是 PNG 图片（2400 × 1400）。回音 = 收到过 OA、面试、Offer 或拒信；撤回后没有任何回音的，不算有回音。</p>' +
+    '<details class="sk-data"><summary>查看数据表</summary><div class="sk-tbl" id="sk-table"></div></details></div>', opener);
+  renderSankey();
+}
+
+function renderSankey(){
+  const m = S.modal; if (!m || m.type !== 'sankey') return;
+  const model = skModel(m), box = $('#sk-fig'), T = SK_TEXT[m.lang];
+  $('#sk-save').disabled = !model.total;
+  if (!model.total){
+    box.innerHTML = '<p class="empty-note" style="padding:20px">这个范围里还没有投递记录。</p>';
+    $('#sk-table').innerHTML = '';
+    return;
+  }
+  box.innerHTML = '<div class="sk-scroll">' + skSVG(model, m) + '</div>';
+  $('#sk-table').innerHTML = '<table><thead><tr><th>' + T.from + '</th><th>' + T.to + '</th><th class="n">' + T.n + '</th></tr></thead><tbody>' +
+    model.links.map(l => '<tr><td>' + esc(T[l.s.id]) + '</td><td>' + esc(T[l.t.id]) + '</td><td class="n">' + l.v + '</td></tr>').join('') + '</tbody></table>';
+}
+
+async function saveSankey(){
+  const m = S.modal;
+  if (!m || m.type !== 'sankey' || m.busy) return;
+  const model = skModel(m); if (!model.total) return;
+  m.busy = true; $('#sk-save').disabled = true;
+  let blob = null;
+  try {
+    blob = await skPNG(skSVG(model, m));
+    const name = 'job-search-' + todayStr() + '.png';
+    if (S.mode === 'cloud'){
+      if (!S.dl) throw { code:'unavailable' };
+      await S.dl.save({ filename:name, data:blob });
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    }
+    toast('已保存图片');
+  } catch(e){
+    const c = e && e.code;
+    if (c === 'declined') toast('没有保存');
+    else if (c === 'rate_limited') toast('请稍等几秒再点一次', true);
+    else if (blob && S.modal === m){
+      // 这个环境不能直接下载：把图片显示出来，让你长按或右键保存
+      $('#sk-fig').innerHTML = '<img alt="' + esc(SK_TEXT[m.lang].alt) + '" src="' + URL.createObjectURL(blob) + '">';
+      $('#sk-hint').textContent = '这里不能直接下载。请长按（电脑上右键）上面的图片，选「存储图片」或「图片另存为」。改动上面的选项会回到可编辑的预览。';
+    } else toast('生成图片失败，请再试一次', true);
+  } finally {
+    m.busy = false;
+    if (S.modal === m) $('#sk-save').disabled = false;
+  }
+}
+
 /* ---------- local storage backend (used when the page runs outside claude.ai) ---------- */
 function banner(msg){ const b = $('#banner'); b.textContent = msg; b.hidden = false; }
 function makeLocalDB(){
@@ -1494,6 +1696,8 @@ document.addEventListener('click', function(e){
     else if (a === 'del-app') deleteApp(act);
     else if (a === 'open-todo') openTodo(act);
     else if (a === 'open-mail') openMail(act);
+    else if (a === 'open-sankey') openSankey(act);
+    else if (a === 'sk-save') saveSankey();
     else if (a === 'open-sync') openSync(act);
     else if (a === 'sync-go') runSync();
     else if (a === 'mail-all' || a === 'mail-none'){
@@ -1534,6 +1738,12 @@ document.addEventListener('input', function(e){
 });
 document.addEventListener('change', function(e){
   if (e.target.id === 'status'){ S.status = e.target.value; render(); }
+  else if (e.target.id === 'sk-track' || e.target.id === 'sk-range' || e.target.id === 'sk-lang'){
+    if (!S.modal || S.modal.type !== 'sankey') return;
+    S.modal[e.target.id.slice(3)] = e.target.value;
+    if (e.target.id === 'sk-lang') ls.set('jt-sk-lang', e.target.value);
+    renderSankey();
+  }
   else if (e.target.id === 'ev-kind') syncDue();
   else if (e.target.id === 'g-on') $('#g-opt').hidden = !e.target.checked;
   else if (e.target.id === 'g-stem') $('#g-stemwrap').hidden = !e.target.checked;
@@ -1599,12 +1809,11 @@ render();
   if (S.mode === 'cloud'){
     try { S.sample = window.claude.use ? await window.claude.use('sample') : null; } catch(e){ S.sample = null; }
     try { S.mcp = window.claude.use ? await window.claude.use('mcp') : null; } catch(e){ S.mcp = null; }
+    try { S.dl = window.claude.use ? await window.claude.use('downloads') : null; } catch(e){ S.dl = null; }
     if (S.mcp && S.sample) $('#btn-sync').hidden = false;
   }
 })();
 })();
 </script>
-
-</body></html>
 </body>
 </html>
