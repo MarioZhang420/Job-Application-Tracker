@@ -127,6 +127,9 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:.8}
 .f-row .p{font:400 12px var(--font-mono);color:var(--muted);text-align:right}
 .f-foot{margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft);display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted)}
 .f-foot b{color:var(--ink);font-variant-numeric:tabular-nums}
+.f-more{margin:10px 0 0;font-size:12px;line-height:1.5;color:var(--muted)}
+.f-more b{color:var(--ink)}
+.lk{background:none;border:0;padding:0;font:inherit;color:var(--ink);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
 
 /* chart */
 .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font:400 12px var(--font-body);color:var(--muted);letter-spacing:0}
@@ -430,10 +433,10 @@ function fail(e){
   toast(c === 'quota_exceeded' ? '数据库已满，请先删除一些旧记录' : c === 'invalid_argument' ? '没有写入权限，当前账号只能查看' : '保存失败，请稍后再试', true);
 }
 let toastT;
-function toast(msg, bad){
+function toast(msg, bad, ms){
   const el = $('#toast');
   el.textContent = msg; el.className = 'toast' + (bad ? ' bad' : ''); el.hidden = false;
-  clearTimeout(toastT); toastT = setTimeout(function(){ el.hidden = true; }, 3200);
+  clearTimeout(toastT); toastT = setTimeout(function(){ el.hidden = true; }, ms || 3200);
 }
 
 /* ---------- render: summary ---------- */
@@ -467,13 +470,18 @@ function renderFunnel(L, U){
   const wait = L.filter(a => statusOf(a) === 'applied').length;
   const rejU = (U || []).filter(a => statusOf(a) === 'rejected').length;   // 没有投递记录的拒信：不算投递，但拒信还是要数
   const rows = [['投递', total, 'var(--sa-fg)'], ['OA', oa, 'var(--so-fg)'], ['面试', iv, 'var(--si-fg)'], ['Offer', of, 'var(--sf-fg)']];
+  // 没有投递记录的 OA / 面试 / Offer：不算进上面的数，但要让人看得见，并且能点进去补上投递日期
+  const oaU = (U || []).filter(a => reached(a, ['oa'])).length, ivU = (U || []).filter(a => reached(a, ['screen','interview'])).length, ofU = (U || []).filter(a => reached(a, ['offer']));
+  const seen = {}, ofNames = ofU.filter(a => !seen[a.company] && (seen[a.company] = 1)).map(a => '<button type="button" class="lk" data-open="' + esc(a.id) + '">' + esc(a.company) + '</button>').join('、');
+  const bits = [oaU ? 'OA ' + oaU : '', ivU ? '面试 ' + ivU : '', ofU.length ? 'Offer <b>' + ofU.length + '</b>（' + ofNames + '）' : ''].filter(Boolean);
+  const more = bits.length ? '<p class="f-more">另有没有投递记录的：' + bits.join(' · ') + '。它们不计入上面的数；点进去，勾选「计入投递数」并填真实的投递日期，就会算进来。</p>' : '';
   $('#funnel-total').textContent = total ? '共 ' + total + ' 个投递' : '';
   $('#funnel').innerHTML = '<div class="funnel">' + rows.map(function(r, i){
     const w = total ? Math.max(r[1] ? 2 : 0, r[1] / total * 100) : 0;
     const pct = i === 0 ? '' : (total ? Math.round(r[1] / total * 100) + '%' : '–');
     return '<div class="f-row"><span class="nm">' + r[0] + '</span><div class="f-bar"><i style="width:' + w + '%;background:' + r[2] + '"></i></div><span class="n">' + r[1] + '</span><span class="p">' + pct + '</span></div>';
   }).join('') + '</div>' +
-  '<div class="f-foot"><span>暂无回音 <b>' + wait + '</b></span><span>已拒 <b>' + rej + '</b>' + (rejU ? '<span class="muted">（另有 ' + rejU + ' 封没有投递记录）</span>' : '') + '</span><span>主动撤回 <b>' + wd + '</b></span></div>';
+  '<div class="f-foot"><span>暂无回音 <b>' + wait + '</b></span><span>已拒 <b>' + rej + '</b>' + (rejU ? '<span class="muted">（另有 ' + rejU + ' 封没有投递记录）</span>' : '') + '</span><span>主动撤回 <b>' + wd + '</b></span></div>' + more;
 }
 
 /* ---------- render: chart ---------- */
@@ -821,7 +829,7 @@ async function submitEvent(){
   await patchEvents(a, evs => evs.concat([ev]));
   btn.disabled = false;
   if ($('#ev-note')) { $('#ev-note').value = ''; $('#ev-due').value = ''; }
-  toast('已记录：' + KINDS[kind].label);
+  toast('已记录：' + KINDS[kind].label + (isCounted(a) ? '' : '。这条没有投递记录，不计入漏斗和进度图；勾选上面的「计入投递数」才会算进去'), false, isCounted(a) ? 0 : 7000);
 }
 
 async function submitInfo(){
@@ -857,15 +865,16 @@ async function deleteApp(btn){
 }
 
 /* ---------- shared: add events / create applications ---------- */
+const roleKey = r => String(r || '').toLowerCase().replace(/[(（][^)）]*[)）]/g, ' ').replace(/\s+/g, ' ').trim();   // 括号里的缩写（如 "(TDP)"）不算不同的职位
 function findApp(list, company, role){
   const c = String(company || '').trim().toLowerCase();
   const m = list.filter(a => String(a.company || '').trim().toLowerCase() === c);
   if (!m.length) return null;
-  const r = String(role || '').trim().toLowerCase();
+  const r = roleKey(role);
   if (r){
-    const exact = m.find(a => String(a.role || '').trim().toLowerCase() === r);
+    const exact = m.find(a => roleKey(a.role) === r);
     if (exact) return exact;
-    const blank = m.filter(a => !String(a.role || '').trim());
+    const blank = m.filter(a => !roleKey(a.role));
     return blank.length === 1 ? blank[0] : null;
   }
   return m.slice().sort((a, b) => a.appliedOn < b.appliedOn ? 1 : -1)[0];
@@ -955,6 +964,7 @@ function openNext(appId, evId, opener){
       '<label class="field" id="nx-date-wrap" hidden><span class="lbl">发生日期</span><input type="date" id="nx-date" value="' + todayStr() + '"></label>' +
       '<label class="field" id="nx-due-wrap" hidden><span class="lbl" id="nx-due-lbl">截止日期（可选）</span><input type="date" id="nx-due"></label>' +
       '<label class="field full" id="nx-note-wrap" hidden><span class="lbl">备注（可选）</span><input id="nx-note" placeholder="例如 HackerRank 90 分钟，两道题"></label>' +
+      (isCounted(a) ? '' : '<div class="field full" id="nx-applied-wrap" hidden><span class="lbl">投递日期（可选）</span><input type="date" id="nx-applied" aria-label="投递日期"><p class="hint" style="margin:6px 0 0">这家公司还没有投递记录，所以不会进漏斗和进度图。填上真实的投递日期，就会计入投递数。</p></div>') +
       '<div class="full form-foot" style="margin-top:0"><span class="note" id="nx-hint">没消息也没关系，它会留在「等结果」里，不会消失。</span><button type="submit" class="btn primary" id="nx-submit">好，先等着</button></div>' +
     '</form>', opener);
 }
@@ -964,6 +974,7 @@ function pickNext(k){
   document.querySelectorAll('[data-act=nx-pick]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === k)));
   const wait = k === 'wait', info = KINDS[k] || {};
   $('#nx-date-wrap').hidden = wait; $('#nx-note-wrap').hidden = wait; $('#nx-due-wrap').hidden = wait || !info.due;
+  if ($('#nx-applied-wrap')) $('#nx-applied-wrap').hidden = wait;
   if (info.due) $('#nx-due-lbl').textContent = info.due + '日期（可选）';
   $('#nx-hint').textContent = wait ? '没消息也没关系，它会留在「等结果」里，不会消失。' : k === 'offer' ? '恭喜！' : '';
   $('#nx-submit').textContent = wait ? '好，先等着' : '保存';
@@ -979,8 +990,13 @@ async function submitNext(){
   const btn = $('#nx-submit'); btn.disabled = true;
   try {
     const events = (a.events || []).map(e => Object.assign({}, e)).concat([ev]);
-    await save(() => S.db.doc('apps/' + a.id).update({ events: events, updatedAt: new Date().toISOString() }));
-    closeModal(); toast('已记录：' + a.company + ' · ' + KINDS[kind].label);
+    const patch = { events: events, updatedAt: new Date().toISOString() };
+    const applied = $('#nx-applied') ? $('#nx-applied').value : '';
+    const makeCounted = !isCounted(a) && isDate(applied);
+    if (makeCounted){ patch.uncounted = false; patch.appliedOn = applied; }
+    await save(() => S.db.doc('apps/' + a.id).update(patch));
+    const still = !isCounted(a) && !makeCounted;
+    closeModal(); toast('已记录：' + a.company + ' · ' + KINDS[kind].label + (makeCounted ? '，并计入投递数' : still ? '。这条没有投递记录，不计入漏斗和进度图；点进去勾选「计入投递数」才会算进去' : ''), false, still ? 7000 : 0);
   } catch(e){ fail(e); btn.disabled = false; }
 }
 
@@ -1512,8 +1528,8 @@ function openSankey(opener){
 function renderSankey(){
   const m = S.modal; if (!m || m.type !== 'sankey') return;
   const model = skModel(m), box = $('#sk-fig'), T = SK_TEXT[m.lang];
-  const un = skList(m, false), unRej = un.filter(a => statusOf(a) === 'rejected').length;
-  $('#sk-hint').textContent = SK_HINT + (un.length ? ' 没有投递记录的 ' + un.length + ' 条（其中拒信 ' + unRej + ' 封）不算投递，没有画进图里。' : '');
+  const un = skList(m, false), unRej = un.filter(a => statusOf(a) === 'rejected').length, unOf = un.filter(a => reached(a, ['offer'])).map(a => a.company).filter((c, i, arr) => arr.indexOf(c) === i);
+  $('#sk-hint').textContent = SK_HINT + (un.length ? ' 没有投递记录的 ' + un.length + ' 条（其中拒信 ' + unRej + ' 封' + (unOf.length ? '，Offer：' + unOf.join('、') : '') + '）不算投递，没有画进图里。' + (unOf.length ? '要画进去，到这几条记录里勾选「计入投递数」并填投递日期。' : '') : '');
   $('#sk-save').disabled = !model.total;
   if (!model.total){
     box.innerHTML = '<p class="empty-note" style="padding:20px">这个范围里还没有投递记录。</p>';
