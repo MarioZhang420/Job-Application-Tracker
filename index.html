@@ -1475,9 +1475,25 @@ function skList(o, counted){
 function skModel(o){ return skLayout(skFlows(skList(o, true))); }
 const SK_HINT = '保存的是 PNG 图片（2400 × 1400）。回音 = 收到过 OA、面试、Offer 或拒信；撤回后没有任何回音的，不算有回音。';
 
+const skPct = (v, total) => { const p = v / total * 100; return p > 0 && p < 1 ? '<1%' : Math.round(p) + '%'; };
+// every label on the image (node numbers and names, title, subtitle, footnote); the SVG preview and the PNG both draw from this list
+function skTexts(model, o){
+  const T = SK_TEXT[o.lang], total = model.total, out = [];
+  model.nodes.forEach(function(n){
+    const first = n.col === 0, x = skr(first ? n.x - 12 : n.x + SK.nodeW + 10), cy = n.y + n.h / 2, an = first ? 'end' : 'start';
+    out.push({ x:x, y:skr(cy - 1), an:an, size:24, weight:600, fill:SK.ink, halo:true, s:String(n.v) });
+    out.push({ x:x, y:skr(cy + 18), an:an, size:14, weight:400, fill:SK.ink2, halo:true, s:T[n.id] + (first ? '' : ' · ' + skPct(n.v, total)) });
+  });
+  const trackLbl = T[o.track === 'ng' ? 'ng' : o.track === 'intern' ? 'intern' : 'all'];
+  const rangeLbl = o.range === 'all' ? T.rAll : T.rN(o.range);
+  out.push({ x:24, y:34, an:'start', size:20, weight:600, fill:SK.ink, halo:false, s:T.title(total) });
+  out.push({ x:24, y:56, an:'start', size:14, weight:400, fill:SK.ink2, halo:false, s:[trackLbl, rangeLbl, T.asof + todayStr()].join(' · ') });
+  out.push({ x:24, y:SK.H - 14, an:'start', size:12, weight:400, fill:SK.ink2, halo:false, s:T.foot });
+  return out;
+}
+
 function skSVG(model, o){
   const T = SK_TEXT[o.lang], total = model.total;
-  const pct = v => { const p = v / total * 100; return p > 0 && p < 1 ? '<1%' : Math.round(p) + '%'; };
   const halo = 'paint-order="stroke" stroke="' + SK.bg + '" stroke-width="4" stroke-linejoin="round"';
   let defs = '', links = '', nodes = '', text = '';
   model.links.forEach(function(l, i){
@@ -1486,27 +1502,45 @@ function skSVG(model, o){
     links += '<path d="M' + x0 + ' ' + sy + 'C' + xm + ' ' + sy + ' ' + xm + ' ' + ty + ' ' + x1 + ' ' + ty + '" fill="none" stroke="url(#skg' + i + ')" stroke-opacity=".38" stroke-width="' + skr(Math.max(l.v * model.k, 1)) + '"><title>' + esc(T[l.s.id] + ' → ' + T[l.t.id] + ': ' + l.v) + '</title></path>';
   });
   model.nodes.forEach(function(n){
-    nodes += '<rect x="' + skr(n.x) + '" y="' + skr(n.y) + '" width="' + SK.nodeW + '" height="' + skr(Math.max(n.h, 2)) + '" rx="2" fill="' + n.color + '"><title>' + esc(T[n.id] + ': ' + n.v + ' (' + pct(n.v) + ')') + '</title></rect>';
-    const first = n.col === 0, tx = skr(first ? n.x - 12 : n.x + SK.nodeW + 10), cy = n.y + n.h / 2, an = first ? 'end' : 'start';
-    text += '<text x="' + tx + '" y="' + skr(cy - 1) + '" text-anchor="' + an + '" font-size="24" font-weight="600" fill="' + SK.ink + '" ' + halo + '>' + n.v + '</text>' +
-      '<text x="' + tx + '" y="' + skr(cy + 18) + '" text-anchor="' + an + '" font-size="14" fill="' + SK.ink2 + '" ' + halo + '>' + esc(T[n.id]) + (first ? '' : ' · ' + pct(n.v)) + '</text>';
+    nodes += '<rect x="' + skr(n.x) + '" y="' + skr(n.y) + '" width="' + SK.nodeW + '" height="' + skr(Math.max(n.h, 2)) + '" rx="2" fill="' + n.color + '"><title>' + esc(T[n.id] + ': ' + n.v + ' (' + skPct(n.v, total) + ')') + '</title></rect>';
   });
-  const trackLbl = T[o.track === 'ng' ? 'ng' : o.track === 'intern' ? 'intern' : 'all'];
-  const rangeLbl = o.range === 'all' ? T.rAll : T.rN(o.range);
-  text += '<text x="24" y="34" font-size="20" font-weight="600" fill="' + SK.ink + '">' + esc(T.title(total)) + '</text>' +
-    '<text x="24" y="56" font-size="14" fill="' + SK.ink2 + '">' + esc([trackLbl, rangeLbl, T.asof + todayStr()].join(' · ')) + '</text>' +
-    '<text x="24" y="' + (SK.H - 14) + '" font-size="12" fill="' + SK.ink2 + '">' + esc(T.foot) + '</text>';
+  skTexts(model, o).forEach(function(t){
+    text += '<text x="' + t.x + '" y="' + t.y + '" text-anchor="' + t.an + '" font-size="' + t.size + '"' + (t.weight !== 400 ? ' font-weight="' + t.weight + '"' : '') + ' fill="' + t.fill + '"' + (t.halo ? ' ' + halo : '') + '>' + esc(t.s) + '</text>';
+  });
   const alt = T.alt + ': ' + model.nodes.map(n => T[n.id] + ' ' + n.v).join(', ');
   return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + SK.W + ' ' + SK.H + '" width="' + SK.W + '" height="' + SK.H + '" font-family=\'' + SK.font + '\' role="img" aria-label="' + esc(alt) + '">' +
     '<rect width="' + SK.W + '" height="' + SK.H + '" fill="' + SK.bg + '"/><defs>' + defs + '</defs>' + links + nodes + text + '</svg>';
 }
 
-async function skPNG(svg){
-  const img = new Image();
-  await new Promise(function(res, rej){ img.onload = res; img.onerror = rej; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
+/* The PNG is drawn straight onto a canvas from the same model. Loading the SVG as an <img> and drawing that
+   fails in hosts that block data: images or taint the canvas after an SVG is drawn ("生成图片失败"). */
+function skPNG(model, o){
   const sc = 2, c = document.createElement('canvas'); c.width = SK.W * sc; c.height = SK.H * sc;
-  const g = c.getContext('2d'); g.fillStyle = SK.bg; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
-  return await new Promise(function(res, rej){ c.toBlob(b => b ? res(b) : rej(new Error('png')), 'image/png'); });
+  const g = c.getContext('2d');
+  if (!g) return Promise.reject(new Error('canvas unavailable'));
+  g.scale(sc, sc);
+  g.fillStyle = SK.bg; g.fillRect(0, 0, SK.W, SK.H);
+  model.links.forEach(function(l){
+    const x0 = l.s.x + SK.nodeW, x1 = l.t.x, xm = (x0 + x1) / 2, gr = g.createLinearGradient(x0, 0, x1, 0);
+    gr.addColorStop(0, l.s.color); gr.addColorStop(1, l.t.color);
+    g.globalAlpha = .38; g.strokeStyle = gr; g.lineWidth = Math.max(l.v * model.k, 1);
+    g.beginPath(); g.moveTo(x0, l.sy); g.bezierCurveTo(xm, l.sy, xm, l.ty, x1, l.ty); g.stroke();
+  });
+  g.globalAlpha = 1;
+  model.nodes.forEach(function(n){
+    g.fillStyle = n.color; g.beginPath();
+    if (g.roundRect) g.roundRect(n.x, n.y, SK.nodeW, Math.max(n.h, 2), 2); else g.rect(n.x, n.y, SK.nodeW, Math.max(n.h, 2));
+    g.fill();
+  });
+  g.lineJoin = 'round'; g.textBaseline = 'alphabetic';
+  skTexts(model, o).forEach(function(t){
+    g.font = t.weight + ' ' + t.size + 'px ' + SK.font; g.textAlign = t.an === 'end' ? 'right' : 'left';
+    if (t.halo){ g.lineWidth = 4; g.strokeStyle = SK.bg; g.strokeText(t.s, t.x, t.y); }
+    g.fillStyle = t.fill; g.fillText(t.s, t.x, t.y);
+  });
+  return new Promise(function(res, rej){
+    try { c.toBlob(b => b ? res(b) : rej(new Error('toBlob returned nothing')), 'image/png'); } catch(e){ rej(e); }
+  });
 }
 
 function openSankey(opener){
@@ -1550,7 +1584,7 @@ async function saveSankey(){
   m.busy = true; $('#sk-save').disabled = true;
   let blob = null;
   try {
-    blob = await skPNG(skSVG(model, m));
+    blob = await skPNG(model, m);
     const name = 'job-search-' + todayStr() + '.png';
     if (S.mode === 'cloud'){
       if (!S.dl) throw { code:'unavailable' };
@@ -1570,7 +1604,7 @@ async function saveSankey(){
       // 这个环境不能直接下载：把图片显示出来，让你长按或右键保存
       $('#sk-fig').innerHTML = '<img alt="' + esc(SK_TEXT[m.lang].alt) + '" src="' + URL.createObjectURL(blob) + '">';
       $('#sk-hint').textContent = '这里不能直接下载。请长按（电脑上右键）上面的图片，选「存储图片」或「图片另存为」。改动上面的选项会回到可编辑的预览。';
-    } else toast('生成图片失败，请再试一次', true);
+    } else toast('生成图片失败（' + String((e && (e.message || e.name || e.code)) || '未知原因').slice(0, 80) + '），请再试一次', true, 6000);
   } finally {
     m.busy = false;
     if (S.modal === m) $('#sk-save').disabled = false;
