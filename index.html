@@ -155,6 +155,10 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 .when.soon{background:var(--so-bg);color:var(--so-fg)}
 .when.late{background:var(--warn-bg);color:var(--warn)}
 .empty-note{color:var(--muted);margin:0;font-size:13px;max-width:46ch}
+.up-sub{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:12px;font-weight:600;color:var(--muted)}
+.up-sub b{color:var(--ink)}
+.picks{display:flex;flex-wrap:wrap;gap:6px}
+.picks .btn[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 
 /* log */
 .log-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:4px}
@@ -526,14 +530,18 @@ function showDay(d){
 }
 
 /* ---------- render: upcoming ---------- */
+/* An OA / interview that is marked done does not just drop out: until something newer is recorded
+   (another round, an offer, a rejection) it stays listed under "等结果", with how long it has been. */
+const waitSince = (e, t) => e.doneOn || (e.due && e.due <= t ? e.due : e.date);
 function renderUpcoming(L, t){
-  const items = [];
+  const items = [], waits = [];
   L.forEach(a => {
     const st = statusOf(a);
     if (st === 'rejected' || st === 'withdrawn' || st === 'offer') return;
     const ev = a.events || [];
     ev.forEach((e, i) => {
-      if (e.done || !KINDS[e.kind] || !KINDS[e.kind].due) return;
+      if (!KINDS[e.kind] || !KINDS[e.kind].due) return;
+      if (e.done){ if (i === ev.length - 1) waits.push({a:a, e:e, since:waitSince(e, t)}); return; }
       if (e.due || i === ev.length - 1) items.push({a:a, e:e});
     });
   });
@@ -542,11 +550,13 @@ function renderUpcoming(L, t){
     const kx = x.e.due || x.e.date, ky = y.e.due || y.e.date;
     return kx < ky ? -1 : kx > ky ? 1 : 0;
   });
-  if (!items.length){
+  waits.sort((x, y) => x.since < y.since ? -1 : x.since > y.since ? 1 : 0);
+  if (!items.length && !waits.length){
     $('#upcoming').innerHTML = '<p class="empty-note">' + (S.loaded ? '还没有待办。拿到 OA 或约到面试后，点右上角的「+ 添加待办」，填公司和截止日期，就会出现在这里。' : '读取中…') + '</p>';
     return;
   }
-  $('#upcoming').innerHTML = '<ul class="up">' + items.map(function(x){
+  let html = '';
+  if (items.length) html += '<ul class="up">' + items.map(function(x){
     let cls = '', rel = '没填日期', sub = KINDS[x.e.kind].due + ' · 收到于 ' + short(x.e.date) + '，点开补日期';
     if (x.e.due){
       const dd = diffDays(x.e.due, t);
@@ -558,6 +568,14 @@ function renderUpcoming(L, t){
            '<span class="when ' + cls + '">' + rel + '</span>' +
            '<button type="button" class="btn sm" data-act="done" data-id="' + esc(x.a.id) + '" data-ev="' + esc(x.e.id) + '">完成</button></li>';
   }).join('') + '</ul>';
+  else html += '<p class="empty-note">现在没有待办的 OA 或面试。</p>';
+  if (waits.length) html += '<p class="up-sub">等结果 <b>' + waits.length + '</b> · 做完了，还没有下一步</p><ul class="up">' + waits.map(function(x){
+    const days = Math.max(0, diffDays(t, x.since));
+    return '<li><button type="button" class="up-main" data-open="' + esc(x.a.id) + '"><b>' + esc(x.a.company) + '</b><span>' + esc(KINDS[x.e.kind].label) + ' 已完成 · ' + short(x.since) + '</span></button>' +
+           '<span class="when ' + (days >= 7 ? 'soon' : '') + '">' + (days === 0 ? '今天' : '已等 ' + days + ' 天') + '</span>' +
+           '<button type="button" class="btn sm" data-act="next" data-id="' + esc(x.a.id) + '" data-ev="' + esc(x.e.id) + '">更新进展</button></li>';
+  }).join('') + '</ul>';
+  $('#upcoming').innerHTML = html;
 }
 
 /* ---------- render: log ---------- */
@@ -787,8 +805,9 @@ function renderTimeline(){
 
 function patchEvents(a, fn){
   const events = (a.events || []).map(e => Object.assign({}, e));
-  return save(() => S.db.doc('apps/' + a.id).update({ events: fn(events), updatedAt: new Date().toISOString() })).catch(fail);
+  return save(() => S.db.doc('apps/' + a.id).update({ events: fn(events), updatedAt: new Date().toISOString() })).then(() => true, e => { fail(e); return false; });
 }
+function setDone(e, done){ e.done = done; if (done) e.doneOn = todayStr(); else delete e.doneOn; return e; }
 
 async function submitEvent(){
   const a = cur(); if (!a || !S.db) return;
@@ -919,6 +938,49 @@ async function submitTodo(){
     const known = !!findApp(S.apps, company, '');
     await applyItems([{ company: company, role: '', track: tr ? tr.value : 'ng', kind: $('#todo-kind').value, date: todayStr(), due: isDate(due) ? due : '', note: $('#todo-note').value.trim() }]);
     closeModal(); toast('已添加待办：' + company + (known ? '' : '（没有投递记录，不计入投递数）'));
+  } catch(e){ fail(e); btn.disabled = false; }
+}
+
+/* ---------- after finishing an OA / interview: what happened next? ---------- */
+function openNext(appId, evId, opener){
+  const a = S.apps.find(x => x.id === appId); if (!a || !S.db) return;
+  const e = (a.events || []).find(x => x.id === evId); if (!e || !KINDS[e.kind]) return;
+  S.modal = { type:'next', id:appId, ev:evId, pick:'wait' };
+  const picks = [['wait', '还没消息']].concat(Object.keys(KINDS).map(k => [k, k === 'withdrawn' ? '我撤回了' : KINDS[k].label]));
+  openModal(
+    '<div class="m-head"><div><h3 id="m-title">' + esc(a.company) + '</h3><p>' + esc(KINDS[e.kind].label) + ' 已完成。接下来怎么样了？</p></div><button type="button" class="btn sm" data-act="close">稍后再说</button></div>' +
+    '<form id="nx-form" class="form" autocomplete="off" novalidate>' +
+      '<div class="field full"><span class="lbl">下一步</span><div class="picks" role="group" aria-label="下一步">' +
+        picks.map(p => '<button type="button" class="btn sm" data-act="nx-pick" data-k="' + p[0] + '" aria-pressed="' + (p[0] === 'wait') + '">' + esc(p[1]) + '</button>').join('') + '</div></div>' +
+      '<label class="field" id="nx-date-wrap" hidden><span class="lbl">发生日期</span><input type="date" id="nx-date" value="' + todayStr() + '"></label>' +
+      '<label class="field" id="nx-due-wrap" hidden><span class="lbl" id="nx-due-lbl">截止日期（可选）</span><input type="date" id="nx-due"></label>' +
+      '<label class="field full" id="nx-note-wrap" hidden><span class="lbl">备注（可选）</span><input id="nx-note" placeholder="例如 HackerRank 90 分钟，两道题"></label>' +
+      '<div class="full form-foot" style="margin-top:0"><span class="note" id="nx-hint">没消息也没关系，它会留在「等结果」里，不会消失。</span><button type="submit" class="btn primary" id="nx-submit">好，先等着</button></div>' +
+    '</form>', opener);
+}
+function pickNext(k){
+  if (!S.modal || S.modal.type !== 'next' || !KINDS[k] && k !== 'wait') return;
+  S.modal.pick = k;
+  document.querySelectorAll('[data-act=nx-pick]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === k)));
+  const wait = k === 'wait', info = KINDS[k] || {};
+  $('#nx-date-wrap').hidden = wait; $('#nx-note-wrap').hidden = wait; $('#nx-due-wrap').hidden = wait || !info.due;
+  if (info.due) $('#nx-due-lbl').textContent = info.due + '日期（可选）';
+  $('#nx-hint').textContent = wait ? '没消息也没关系，它会留在「等结果」里，不会消失。' : k === 'offer' ? '恭喜！' : '';
+  $('#nx-submit').textContent = wait ? '好，先等着' : '保存';
+}
+async function submitNext(){
+  const m = S.modal, a = m && S.apps.find(x => x.id === m.id); if (!a || !S.db) return;
+  const kind = m.pick;
+  if (kind === 'wait'){ closeModal(); toast(a.company + ' 留在「等结果」里'); return; }
+  const ev = { id: uid(), kind: kind, date: isDate($('#nx-date').value) ? $('#nx-date').value : todayStr(), done: false };
+  const due = KINDS[kind].due ? $('#nx-due').value : '', note = $('#nx-note').value.trim();
+  if (isDate(due)) ev.due = due;
+  if (note) ev.note = note;
+  const btn = $('#nx-submit'); btn.disabled = true;
+  try {
+    const events = (a.events || []).map(e => Object.assign({}, e)).concat([ev]);
+    await save(() => S.db.doc('apps/' + a.id).update({ events: events, updatedAt: new Date().toISOString() }));
+    closeModal(); toast('已记录：' + a.company + ' · ' + KINDS[kind].label);
   } catch(e){ fail(e); btn.disabled = false; }
 }
 
@@ -1727,11 +1789,13 @@ document.addEventListener('click', function(e){
       (S.modal.mode === 'single' ? $('#add-company') : $('#add-bulk')).focus();
     }
     else if (a === 'done'){
-      const app = S.apps.find(x => x.id === act.dataset.id);
-      if (app) patchEvents(app, evs => evs.map(x => x.id === act.dataset.ev ? Object.assign(x, { done:true }) : x));
+      const app = S.apps.find(x => x.id === act.dataset.id), evId = act.dataset.ev;
+      if (app) patchEvents(app, evs => evs.map(x => x.id === evId ? setDone(x, true) : x)).then(ok => { if (ok) openNext(app.id, evId, null); });
     }
+    else if (a === 'next') openNext(act.dataset.id, act.dataset.ev, act);
+    else if (a === 'nx-pick') pickNext(act.dataset.k);
     else if (a === 'toggle-done'){
-      const app = cur(); if (app) patchEvents(app, evs => evs.map(x => x.id === act.dataset.ev ? Object.assign(x, { done: !x.done }) : x));
+      const app = cur(); if (app) patchEvents(app, evs => evs.map(x => x.id === act.dataset.ev ? setDone(x, !x.done) : x));
     }
     else if (a === 'del-ev'){
       const app = cur(); if (app) patchEvents(app, evs => evs.filter(x => x.id !== act.dataset.ev));
@@ -1766,6 +1830,7 @@ document.addEventListener('submit', function(e){
   e.preventDefault();
   if (e.target.id === 'add-form') submitAdd();
   else if (e.target.id === 'ev-form') submitEvent();
+  else if (e.target.id === 'nx-form') submitNext();
   else if (e.target.id === 'info-form') submitInfo();
   else if (e.target.id === 'todo-form') submitTodo();
   else if (e.target.id === 'grad-form') saveGrad();

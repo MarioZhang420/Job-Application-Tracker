@@ -11,7 +11,7 @@
 - **进展漏斗**：投递 → OA → 面试 → Offer 的数量和比例，另有暂无回音、已拒、主动撤回。
 - **进度图**：点「进度图」，把「投递 → 有回音 / 没回音 → OA → 面试 → Offer / 被拒 / 撤回 / 进行中」的流向画成一张 Sankey 图，可以按类型和投递日期筛选，图里的文字可选英文或中文，保存成 PNG 图片分享。见下文。
 - **最近 21 天图表**：每天投递数（New Grad / Intern 分色），OA 和面试出现的日期有标记。
-- **待办 OA 和面试**：按截止日期排序，逾期标红；没填日期的 OA 也会列出来提醒你补。
+- **待办 OA 和面试**：按截止日期排序，逾期标红；没填日期的 OA 也会列出来提醒你补。点「完成」后会接着问你「接下来怎么样了」：又一轮 OA / 面试、Offer、拒信、撤回，都可以直接记下来；还没消息就选「还没消息」，它会留在下面的「等结果」里，写着已经等了几天，之后随时点「更新进展」补上，不会消失。
 - **投递记录**：按投递日期分组，可搜索、按状态和类型筛选，也可以改成「按最近进展」排序，新的拒信、OA、面试排在最前面（选「已拒」「OA」「面试中」等状态时会自动这样排）；每条投递有进展时间线（OA、电话面、技术面、Offer、拒信、撤回）。
 - **粘贴邮件解析**：把招聘邮件贴进来，识别公司、职位、邮件类型和日期，确认后再保存。见下文。
 - **毕业倒计时 + OPT 追踪**：自己填毕业日期，显示倒计时；F-1 学生可以开启 OPT 追踪。见下文。
@@ -99,9 +99,10 @@ OA、面试、Offer、拒信都是对某次申请的**回复**，不是新的申
 apps/<id>         一条投递
   company, role, track ("ng" | "intern"), appliedOn (YYYY-MM-DD),
   link, location, notes, src?, uncounted?, createdAt, updatedAt,
-  events: [{ id, kind, date, due?, note?, src?, done }]
+  events: [{ id, kind, date, due?, note?, src?, done, doneOn? }]
           kind: oa | screen | interview | offer | rejected | withdrawn
           src: 来源邮件 ID（同步邮箱时记录，用来跳过已经处理过的邮件）
+          doneOn: 标为完成的日期（「等结果」里算已经等了几天）
           uncounted: true 表示不计入投递数（见下）
 meta/settings     设置
   dailyGoal, gradDate,
