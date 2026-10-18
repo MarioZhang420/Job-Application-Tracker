@@ -155,6 +155,12 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 .when.soon{background:var(--so-bg);color:var(--so-fg)}
 .when.late{background:var(--warn-bg);color:var(--warn)}
 .empty-note{color:var(--muted);margin:0;font-size:13px;max-width:46ch}
+.gate{margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--field);font-size:13px;display:flex;flex-direction:column;gap:3px}
+.gate b{font-size:14px}
+.gate .muted{font-size:12px}
+.gate.ok{background:var(--sf-bg);border-color:transparent;color:var(--sf-fg)}
+.gate.ok b{color:var(--sf-fg)}
+.gate .bad{color:var(--warn)}
 .up-sub{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:12px;font-weight:600;color:var(--muted)}
 .up-sub b{color:var(--ink)}
 .picks{display:flex;flex-wrap:wrap;gap:6px}
@@ -190,6 +196,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible}
 .st-withdrawn{font-style:italic}
 .st-oa{background:var(--so-bg);color:var(--so-fg)}
 .st-interview{background:var(--si-bg);color:var(--si-fg)}
+.st-expired{background:var(--sa-bg);color:var(--so-fg);font-style:italic}
 .st-offer{background:var(--sf-bg);color:var(--sf-fg)}
 .st-rejected{background:var(--sr-bg);color:var(--sr-fg)}
 .log-empty{padding:28px 4px 12px}
@@ -350,6 +357,7 @@ a{color:var(--focus)}
         <option value="all">全部状态</option>
         <option value="applied">已投递（暂无回音）</option>
         <option value="oa">OA</option>
+        <option value="expired">OA 过期（没做）</option>
         <option value="interview">面试中</option>
         <option value="offer">Offer</option>
         <option value="rejected">已拒</option>
@@ -403,7 +411,7 @@ const KINDS = {
   rejected:  { label:'拒信',          status:'rejected' },
   withdrawn: { label:'主动撤回',      status:'withdrawn' }
 };
-const STATUS = { applied:'已投递', oa:'OA', interview:'面试中', offer:'Offer', rejected:'已拒', withdrawn:'已撤回' };
+const STATUS = { applied:'已投递', oa:'OA', expired:'OA 过期', interview:'面试中', offer:'Offer', rejected:'已拒', withdrawn:'已撤回' };
 const TRACK = { ng:'New Grad', intern:'Intern' };
 
 const S = { db:null, sample:null, mcp:null, dl:null, mailsync:{}, settings:{}, mode:'cloud', apps:[], loaded:false, goal:5, track:'all', q:'', status:'all', sort:'applied', modal:null, readDay:null, lastFocus:null };
@@ -420,7 +428,8 @@ const isCounted = a => a.uncounted !== true;
    (including an unknown title) is New Grad / full-time. */
 const INTERN_RE = /\b(?:intern|interns|internship|internships|co-?op)\b|实习/i;
 const trackFromRole = role => INTERN_RE.test(String(role || '')) ? 'intern' : 'ng';
-const statusOf = a => { const ev = a.events || []; return ev.length ? (KINDS[ev[ev.length-1].kind] || {}).status || 'applied' : 'applied'; };
+/* An OA that passed its deadline without being done is marked `missed`; that application's status is then 'expired'. */
+const statusOf = a => { const ev = a.events || []; if (!ev.length) return 'applied'; const l = ev[ev.length-1]; return l.kind === 'oa' && l.missed === true ? 'expired' : (KINDS[l.kind] || {}).status || 'applied'; };
 const reached = (a, kinds) => (a.events || []).some(e => kinds.indexOf(e.kind) >= 0);
 
 /* ---------- write queue ---------- */
@@ -466,6 +475,7 @@ function renderFunnel(L, U){
   const rej = L.filter(a => statusOf(a) === 'rejected').length;
   const wd = L.filter(a => statusOf(a) === 'withdrawn').length;
   const wait = L.filter(a => statusOf(a) === 'applied').length;
+  const exp = L.filter(a => statusOf(a) === 'expired').length;
   const rejU = (U || []).filter(a => statusOf(a) === 'rejected').length;   // 没有投递记录的拒信：不算投递，但拒信还是要数
   const rows = [['投递', total, 'var(--sa-fg)'], ['OA', oa, 'var(--so-fg)'], ['面试', iv, 'var(--si-fg)'], ['Offer', of, 'var(--sf-fg)']];
   $('#funnel-total').textContent = total ? '共 ' + total + ' 个投递' : '';
@@ -474,7 +484,7 @@ function renderFunnel(L, U){
     const pct = i === 0 ? '' : (total ? Math.round(r[1] / total * 100) + '%' : '–');
     return '<div class="f-row"><span class="nm">' + r[0] + '</span><div class="f-bar"><i style="width:' + w + '%;background:' + r[2] + '"></i></div><span class="n">' + r[1] + '</span><span class="p">' + pct + '</span></div>';
   }).join('') + '</div>' +
-  '<div class="f-foot"><span>暂无回音 <b>' + wait + '</b></span><span>已拒 <b>' + rej + '</b>' + (rejU ? '<span class="muted">（另有 ' + rejU + ' 封没有投递记录）</span>' : '') + '</span><span>主动撤回 <b>' + wd + '</b></span></div>';
+  '<div class="f-foot"><span>暂无回音 <b>' + wait + '</b></span><span>OA 过期 <b>' + exp + '</b></span><span>已拒 <b>' + rej + '</b>' + (rejU ? '<span class="muted">（另有 ' + rejU + ' 封没有投递记录）</span>' : '') + '</span><span>主动撤回 <b>' + wd + '</b></span></div>';
 }
 
 /* ---------- render: chart ---------- */
@@ -538,10 +548,10 @@ function renderUpcoming(L, t){
   const items = [], waits = [];
   L.forEach(a => {
     const st = statusOf(a);
-    if (st === 'rejected' || st === 'withdrawn' || st === 'offer') return;
+    if (st === 'rejected' || st === 'withdrawn' || st === 'offer' || st === 'expired') return;
     const ev = a.events || [];
     ev.forEach((e, i) => {
-      if (!KINDS[e.kind] || !KINDS[e.kind].due) return;
+      if (!KINDS[e.kind] || !KINDS[e.kind].due || e.missed) return;
       if (e.done){ if (i === ev.length - 1) waits.push({a:a, e:e, since:waitSince(e, t)}); return; }
       if (e.due || i === ev.length - 1) items.push({a:a, e:e});
     });
@@ -567,6 +577,7 @@ function renderUpcoming(L, t){
     }
     return '<li><button type="button" class="up-main" data-open="' + esc(x.a.id) + '"><b>' + esc(x.a.company) + '</b><span>' + esc(sub) + '</span></button>' +
            '<span class="when ' + cls + '">' + rel + '</span>' +
+           (x.e.kind === 'oa' && x.e.due && x.e.due < t && statusOf(x.a) === 'oa' ? '<button type="button" class="btn sm" data-act="missed" data-id="' + esc(x.a.id) + '" data-ev="' + esc(x.e.id) + '" title="OA 已经过了截止日期，没有做">过期没做</button>' : '') +
            '<button type="button" class="btn sm" data-act="done" data-id="' + esc(x.a.id) + '" data-ev="' + esc(x.e.id) + '">完成</button></li>';
   }).join('') + '</ul>';
   else html += '<p class="empty-note">现在没有待办的 OA 或面试。</p>';
@@ -797,9 +808,10 @@ function renderTimeline(){
     ev.map(function(e){
       const k = KINDS[e.kind] || { label:e.kind };
       return '<li class="k-' + esc(e.kind) + (e.done ? ' is-done' : '') + '"><div class="tl-body"><b>' + esc(k.label) + '</b> <span class="muted mono">' + short(e.date) + '</span>' +
-        (e.due ? '<span class="due">' + esc(k.due || '日期') + ' ' + short(e.due) + (e.done ? ' · 已完成' : '') + '</span>' : '') +
+        (e.due ? '<span class="due">' + esc(k.due || '日期') + ' ' + short(e.due) + (e.missed ? ' · 过期没做' : e.done ? ' · 已完成' : '') + '</span>' : '') +
         (e.note ? '<p>' + esc(e.note) + '</p>' : '') + '</div><div class="tl-act">' +
         (e.due ? '<button type="button" class="btn sm" data-act="toggle-done" data-ev="' + esc(e.id) + '">' + (e.done ? '改回未完成' : '标为完成') + '</button>' : '') +
+        (e.kind === 'oa' && e.due && !e.done && e.due < todayStr() && e === (a.events || [])[(a.events || []).length - 1] ? '<button type="button" class="btn sm" data-act="toggle-missed" data-ev="' + esc(e.id) + '">过期没做</button>' : '') +
         '<button type="button" class="btn sm" data-act="del-ev" data-ev="' + esc(e.id) + '" aria-label="删除这条进展">删除</button></div></li>';
     }).join('');
 }
@@ -808,7 +820,9 @@ function patchEvents(a, fn, extra){
   const events = (a.events || []).map(e => Object.assign({}, e));
   return save(() => S.db.doc('apps/' + a.id).update(Object.assign({ events: fn(events), updatedAt: new Date().toISOString() }, extra || {}))).then(() => true, e => { fail(e); return false; });
 }
-function setDone(e, done){ e.done = done; if (done) e.doneOn = todayStr(); else delete e.doneOn; return e; }
+function setDone(e, done){ e.done = done; if (done) e.doneOn = todayStr(); else { delete e.doneOn; delete e.missed; } return e; }
+// 收到的 OA 过了截止日期还没做：算「过期没做」，不再出现在待办里，状态变成 OA 过期
+function setMissed(e, on){ if (on){ e.done = true; e.missed = true; e.doneOn = todayStr(); } else { e.done = false; delete e.missed; delete e.doneOn; } return e; }
 
 async function submitEvent(){
   const a = cur(); if (!a || !S.db) return;
@@ -1405,14 +1419,15 @@ const SK_NODES = [
   { id:'iv',        col:3, color:'#1c5cab' },
   { id:'offer',     col:4, color:'#0ca30c' },
   { id:'pending',   col:4, color:'#86b6ef' },
+  { id:'expired',   col:4, color:'#d98c2b' },
   { id:'rejected',  col:4, color:'#d03b3b' },
   { id:'withdrawn', col:4, color:'#898781' }
 ];
 const SK_TEXT = {
-  en: { apps:'Applications', replies:'Replies', noreply:'No Replies', oa:'OA', iv:'Interviews', offer:'Offers', pending:'In Progress', rejected:'Rejected', withdrawn:'Withdrawn',
+  en: { apps:'Applications', replies:'Replies', noreply:'No Replies', oa:'OA', iv:'Interviews', offer:'Offers', pending:'In Progress', expired:'OA Expired', rejected:'Rejected', withdrawn:'Withdrawn',
     title:n => 'Job search · ' + n + ' application' + (n === 1 ? '' : 's'), all:'All types', ng:'New Grad', intern:'Intern', rAll:'All time', rN:n => 'Last ' + n + ' days', asof:'as of ',
     foot:'Reply = got an OA, interview, offer or rejection. Percentages are shares of all applications.', alt:'Job search flow', from:'From', to:'To', n:'Count' },
-  zh: { apps:'投递', replies:'有回音', noreply:'没回音', oa:'OA', iv:'面试', offer:'Offer', pending:'进行中', rejected:'被拒', withdrawn:'撤回',
+  zh: { apps:'投递', replies:'有回音', noreply:'没回音', oa:'OA', iv:'面试', offer:'Offer', pending:'进行中', expired:'OA 过期', rejected:'被拒', withdrawn:'撤回',
     title:n => '求职进度 · 共 ' + n + ' 个投递', all:'全部类型', ng:'New Grad', intern:'Intern', rAll:'全部时间', rN:n => '最近 ' + n + ' 天', asof:'截至 ',
     foot:'回音 = 收到过 OA、面试、Offer 或拒信。百分比是占全部投递的比例。', alt:'求职进度流向图', from:'从', to:'到', n:'数量' }
 };
@@ -1426,8 +1441,8 @@ function skFlows(list){
     const kinds = (a.events || []).map(e => e.kind);
     if (!kinds.length){ add('apps', 'noreply'); return; }
     if (kinds.every(k => k === 'withdrawn')){ add('apps', 'withdrawn'); return; }   // pulled out before any reply
-    const last = kinds[kinds.length - 1];
-    const out = kinds.indexOf('offer') >= 0 ? 'offer' : last === 'rejected' ? 'rejected' : last === 'withdrawn' ? 'withdrawn' : 'pending';
+    const last = kinds[kinds.length - 1], lastEv = a.events[a.events.length - 1];
+    const out = kinds.indexOf('offer') >= 0 ? 'offer' : last === 'rejected' ? 'rejected' : last === 'withdrawn' ? 'withdrawn' : lastEv.kind === 'oa' && lastEv.missed ? 'expired' : 'pending';
     add('apps', 'replies');
     let prev = 'replies';
     if (kinds.indexOf('oa') >= 0){ add(prev, 'oa'); prev = 'oa'; }
@@ -1473,7 +1488,7 @@ function skList(o, counted){
   return S.apps.filter(a => isCounted(a) === counted && (o.track === 'all' || trackOf(a) === o.track) && (!from || a.appliedOn >= from));
 }
 function skModel(o){ return skLayout(skFlows(skList(o, true))); }
-const SK_HINT = '保存的是 PNG 图片（2400 × 1400）。回音 = 收到过 OA、面试、Offer 或拒信；撤回后没有任何回音的，不算有回音。';
+const SK_HINT = '保存的是 PNG 图片（2400 × 1400）。回音 = 收到过 OA、面试、Offer 或拒信；撤回后没有任何回音的，不算有回音。OA 过期 = 收到 OA 但没在截止日期前做。';
 
 const skPct = (v, total) => { const p = v / total * 100; return p > 0 && p < 1 ? '<1%' : Math.round(p) + '%'; };
 // every label on the image (node numbers and names, title, subtitle, footnote); the SVG preview and the PNG both draw from this list
@@ -1698,6 +1713,31 @@ function saveSettings(patch){
   render();
   return save(() => S.db.doc('meta/settings').set(S.settings)).catch(fail);
 }
+/* US federal holidays (a Saturday holiday is observed on Friday, a Sunday one on Monday). USCIS counts premium
+   processing in business days, so weekends and these days are skipped when the 30-day deadline is estimated. */
+function usHolidays(y){
+  const nth = (m, wd, n) => { const d = new Date(y, m, 1); let c = 0; for (;;){ if (d.getDay() === wd && ++c === n) return ymd(d); d.setDate(d.getDate() + 1); } };
+  const last = (m, wd) => { const d = new Date(y, m + 1, 0); while (d.getDay() !== wd) d.setDate(d.getDate() - 1); return ymd(d); };
+  const obs = (m, day) => { const d = new Date(y, m, day), w = d.getDay(); if (w === 6) d.setDate(day - 1); else if (w === 0) d.setDate(day + 1); return ymd(d); };
+  return [obs(0, 1), nth(0, 1, 3), nth(1, 1, 3), last(4, 1), obs(5, 19), obs(6, 4), nth(8, 1, 1), nth(9, 1, 2), obs(10, 11), nth(10, 4, 4), obs(11, 25)];
+}
+function addBusinessDays(start, n){
+  const hol = {}, y0 = parse(start).getFullYear();
+  [y0, y0 + 1, y0 + 2].forEach(y => usHolidays(y).forEach(h => { hol[h] = 1; }));
+  let d = start, c = 0;
+  while (c < n){ d = addDays(d, 1); const w = parse(d).getDay(); if (w !== 0 && w !== 6 && !hol[d]) c++; }
+  return d;
+}
+/* You may begin OPT only after USCIS approves the I-765, you have the EAD card in hand, and the start date on the
+   card has arrived (Study in the States). Premium processing only makes the approval faster. */
+function workGate(o, t){
+  const miss = [];
+  if (!isDate(o.approvedDate)) miss.push('等 USCIS 批准');
+  if (!isDate(o.cardDate) && !isDate(o.jobStart)) miss.push('等 EAD 卡寄到');
+  if (!isDate(o.startDate)) miss.push('填上 EAD 卡上的开始日期');
+  else if (diffDays(o.startDate, t) > 0) miss.push('等卡上的开始日期（' + fmt(o.startDate) + '，还有 ' + diffDays(o.startDate, t) + ' 天）');
+  return { ok: !miss.length, missing: miss };
+}
 function optEndOf(o){
   if (isDate(o.endDate)) return o.endDate;
   if (isDate(o.startDate)){ const d = parse(o.startDate); d.setFullYear(d.getFullYear() + 1); d.setDate(d.getDate() - 1); return ymd(d); }
@@ -1710,7 +1750,8 @@ function unemployment(o, t){
   const used = Math.max(0, diffDays(upto, o.startDate)) + Math.max(0, Math.floor(Number(o.extraDays) || 0));
   return { used: used, limit: limit, left: limit - used, employed: isDate(o.jobStart), started: diffDays(t, o.startDate) >= 0 };
 }
-function optMilestones(g, o){
+function optMilestones(g, o, t){
+  t = t || todayStr();
   const has = k => isDate(o[k]);
   const out = [];
   const end = optEndOf(o);
@@ -1719,14 +1760,32 @@ function optMilestones(g, o){
     const d30 = has('dsoDate') ? addDays(o.dsoDate, 30) : '';
     out.push({ title:'向学校 DSO 申请 OPT 推荐', note:'最早可申请：毕业前 90 天（' + fmt(w0) + '）。学校常要求更早交材料，先问 DSO。拿到推荐后 I-20 上会有 OPT 推荐日期。',
       done: has('dsoDate') || has('filedDate') || has('receiptDate') || has('approvedDate'), date: o.dsoDate, deadline: w1 });
-    out.push({ title:'向 USCIS 递交 I-765', note:(d30 ? 'DSO 推荐后 30 天内要送达 USCIS（' + fmt(d30) + '），且' : '') + '最晚毕业后 60 天（' + fmt(w1) + '），最早毕业前 90 天（' + fmt(w0) + '）起可递交。',
+    out.push({ title:'向 USCIS 递交 I-765', note:(d30 ? 'DSO 推荐后 30 天内要送达 USCIS（' + fmt(d30) + '），且' : '') + '最晚毕业后 60 天（' + fmt(w1) + '），最早毕业前 90 天（' + fmt(w0) + '）起可递交。' + (has('reqStart') ? '你在 I-765 上申请的开始日期：' + fmt(o.reqStart) + '。' : ''),
       done: has('filedDate') || has('receiptDate') || has('approvedDate'), date: o.filedDate, deadline: d30 && d30 < w1 ? d30 : w1 });
   } else {
     out.push({ title:'先设置毕业日期', note:'OPT 的递交窗口按 I-20 上的 Program End Date 推算。', done:false });
   }
+  if (o.pp){
+    // 加急：从 USCIS 收到 I-907 起算 30 个工作日；收到补件通知（RFE）会停表，回复被收到后重新计时
+    const clock = has('rfeDate') && (!has('ppDate') || o.rfeDate > o.ppDate) ? o.rfeDate : has('ppDate') ? o.ppDate : '';
+    const dl = clock ? addBusinessDays(clock, 30) : '';
+    out.push({ title:'加急处理（Premium Processing）', done: has('approvedDate'), date: o.approvedDate, deadline: dl || undefined,
+      note: !clock ? '计时从 USCIS 收到 I-907 起算，不是 I-765 的递交日。填上 USCIS 收到 I-907 的日期，会算出 30 个工作日的期限。已经递交 I-765、还没加急的，可以之后单独补交 I-907。'
+        : 'USCIS 要在 30 个工作日内处理，期限 ' + fmt(dl) + (clock === o.rfeDate ? '（从 RFE 回复被收到起重新计时）' : '') + '，已去掉周末和美国联邦假日，只是估算。收到补件通知（RFE）会停表，回复被收到后重新计 30 个工作日；超过期限 USCIS 要退还加急费。' });
+  } else if (has('filedDate')){
+    out.push({ title:'普通处理（没有加急）', done: has('approvedDate'), date: o.approvedDate,
+      note:'没有固定期限，以 USCIS 官网的处理时间页为准。已经等了 ' + Math.max(0, diffDays(t, o.filedDate)) + ' 天（从递交 I-765 算起）。想加快的话，I-765 还在处理中时可以补交 I-907 申请加急。' });
+  }
   out.push({ title:'收到 Receipt Notice（I-797C）', note:'递交后通常几周内会收到回执。', done: has('receiptDate') || has('approvedDate'), date: o.receiptDate });
-  out.push({ title:'获批并拿到 EAD 卡', note: has('startDate') ? 'OPT 期间：' + fmt(o.startDate) + ' 到 ' + (end ? fmt(end) : '（未填结束日）') + '。EAD 开始日期之前不能工作。' : 'EAD 卡上的开始日期之前不能工作。',
+  if (has('bioDate') || (has('receiptDate') && !has('approvedDate'))){
+    const bioDone = o.bioDone === true || has('approvedDate');
+    out.push({ title:'指纹 / 拍照预约（Biometrics）', done: bioDone, date: has('bioDate') ? o.bioDate : '', deadline: has('bioDate') && !bioDone ? o.bioDate : undefined,
+      note: has('bioDate') ? '预约日期 ' + fmt(o.bioDate) + '。带上预约通知（I-797C）和有效证件；去不了要在预约日之前改期，缺席可能被拒。'
+        : '不是每个人都有：收到 USCIS 的预约通知（邮寄，myUSCIS 里也有）才需要去，没收到就不用管。收到了把预约日期填上。USCIS 官网没写加急会不会等指纹，以通知为准。' });
+  }
+  out.push({ title:'获批（Approved）', note: has('startDate') ? 'OPT 期间：' + fmt(o.startDate) + ' 到 ' + (end ? fmt(end) : '（未填结束日）') + '。EAD 开始日期之前不能工作。' : '批准后 USCIS 会寄出 EAD 卡。',
     done: has('approvedDate') || has('startDate'), date: o.approvedDate });
+  out.push({ title:'收到 EAD 卡', note:'卡上有 OPT 的开始和结束日期，收到后核对姓名和日期。只有拿到卡、并且卡上的开始日期到了，才能开始工作。', done: has('cardDate'), date: o.cardDate });
   out.push({ title:'开始工作', note:'没有工作的日子会计入失业天数，上限见下方。', done: has('jobStart'), date: o.jobStart });
   if (end) out.push({ title:'OPT 到期', note: fmt(end) + '。到期后要停止工作，除非 STEM 延期已按时递交。', done:false, deadline:end });
   if (o.stemOn){
@@ -1744,7 +1803,7 @@ function whenChip(dd){
 function renderGrad(t){
   const g = isDate(S.settings.gradDate) ? S.settings.gradDate : '';
   const o = S.settings.opt || {};
-  const ms = o.on ? optMilestones(g, o) : [];
+  const ms = o.on ? optMilestones(g, o, t) : [];
   let left;
   if (!g){
     left = '<div class="count-empty"><b>还没设置毕业日期</b><span class="muted">设置后会显示倒计时，OPT 的递交窗口也会按它推算。</span></div><button type="button" class="btn primary" data-act="open-grad">设置毕业日期</button>';
@@ -1759,7 +1818,14 @@ function renderGrad(t){
   if (!o.on){
     right = '<div class="count-empty"><b>在美国读书的 F-1 学生？</b><span class="muted">开启 OPT 追踪后，会按毕业日期算出递交 I-765 的时间窗口、失业天数和 STEM 延期的截止日，临近时提醒你。</span></div><button type="button" class="btn" data-act="open-grad" data-opt="1">开启 OPT 追踪</button>';
   } else {
-    right = '<ul class="ms">' + ms.map(function(m){
+    const touched = ['filedDate', 'receiptDate', 'approvedDate', 'startDate', 'cardDate'].some(k => isDate(o[k]));
+    const gate = workGate(o, t);
+    const late = isDate(o.reqStart) && g && o.reqStart > addDays(g, 60);
+    right = (touched ? '<div class="gate' + (gate.ok ? ' ok' : '') + '"><b>' + (gate.ok ? '可以开始工作了' : '现在还不能工作') + '</b>' +
+      (gate.ok ? '' : '<span>还差：' + esc(gate.missing.join('；')) + '</span><span class="muted">要同时满足：USCIS 已批准、EAD 卡到手、卡上的开始日期已到。加急只会让审批更快，能不能工作仍要看卡上的开始日期。</span>') +
+      (isDate(o.reqStart) ? '<span class="muted">你申请的开始日期：' + fmt(o.reqStart) + '</span>' : '') +
+      (late ? '<span class="bad">申请的开始日期晚于毕业后 60 天（' + fmt(addDays(g, 60)) + '），毕业后 OPT 最晚只能从这一天开始，请问 DSO。</span>' : '') + '</div>' : '') +
+      '<ul class="ms">' + ms.map(function(m){
       const dd = m.deadline ? diffDays(m.deadline, t) : null;
       const st = m.done ? 'done' : dd !== null && dd < 0 ? 'late' : '';
       const chip = m.done ? '<span class="when ok">✓ ' + (isDate(m.date) ? short(m.date) : '已完成') + '</span>' : dd !== null ? whenChip(dd) : '';
@@ -1789,8 +1855,17 @@ function openGrad(opener, enableOpt){
       '<div id="g-opt" class="full form"' + (o.on || enableOpt ? '' : ' hidden') + '>' +
         '<p class="hint full" style="margin:0">做到哪一步就填哪一步的日期，没做到的留空。</p>' +
         df('g-dso', 'DSO 的 OPT 推荐日期（I-20 上有）', o.dsoDate) + df('g-filed', 'I-765 递交日期', o.filedDate) +
-        df('g-receipt', '收到 Receipt Notice 的日期', o.receiptDate) + df('g-approved', '获批日期', o.approvedDate) +
-        df('g-start', 'EAD 开始日期', o.startDate) + df('g-end', 'EAD 结束日期（不填则按开始日期推算 12 个月）', o.endDate) +
+        df('g-req', 'I-765 上申请的开始日期', o.reqStart) +
+        '<p class="hint" style="margin:0;align-self:end">毕业后 OPT 的开始日期最晚是毕业后 60 天。递交后还能不能改，官方页面没写，要改先问 DSO。</p>' +
+        '<label class="chk"><input type="checkbox" id="g-pp"' + (o.pp ? ' checked' : '') + '>申请了加急（Premium Processing，I-907）</label>' +
+        '<div id="g-ppwrap" class="full form"' + (o.pp ? '' : ' hidden') + '>' +
+          df('g-ppdate', 'USCIS 收到 I-907 的日期（加急从这天开始算 30 个工作日）', o.ppDate) + df('g-rfe', '补件（RFE）的回复被 USCIS 收到的日期（没有就空着）', o.rfeDate) +
+        '</div>' +
+        df('g-receipt', '收到 Receipt Notice 的日期', o.receiptDate) +
+        df('g-bio', '指纹 / 拍照（Biometrics）预约日期（收到预约通知才填）', o.bioDate) +
+        '<label class="chk"><input type="checkbox" id="g-biodone"' + (o.bioDone ? ' checked' : '') + '>指纹 / 拍照已经去过了</label>' +
+        df('g-approved', '获批日期', o.approvedDate) + df('g-card', '收到 EAD 卡的日期', o.cardDate) +
+        df('g-start', 'EAD 开始日期（卡上的）', o.startDate) + df('g-end', 'EAD 结束日期（不填则按开始日期推算 12 个月）', o.endDate) +
         df('g-job', '开始工作日期（OPT 期间的第一份工作）', o.jobStart) +
         '<label class="field"><span class="lbl">其他失业天数（换工作的空档，手动填）</span><input type="number" id="g-extra" min="0" max="365" value="' + esc(o.extraDays || 0) + '"></label>' +
         '<label class="chk"><input type="checkbox" id="g-stem"' + (o.stemOn ? ' checked' : '') + '>计划申请 STEM OPT 延期（需要 STEM 专业，雇主要参加 E-Verify）</label>' +
@@ -1805,7 +1880,8 @@ function openGrad(opener, enableOpt){
 async function saveGrad(){
   const v = id => { const x = $('#' + id).value; return isDate(x) ? x : ''; };
   const btn = $('#g-save'); btn.disabled = true;
-  const opt = { on: $('#g-on').checked, dsoDate:v('g-dso'), filedDate:v('g-filed'), receiptDate:v('g-receipt'), approvedDate:v('g-approved'), startDate:v('g-start'), endDate:v('g-end'),
+  const opt = { on: $('#g-on').checked, dsoDate:v('g-dso'), filedDate:v('g-filed'), reqStart:v('g-req'), pp: $('#g-pp').checked, ppDate:v('g-ppdate'), rfeDate:v('g-rfe'),
+    receiptDate:v('g-receipt'), bioDate:v('g-bio'), bioDone: $('#g-biodone').checked, approvedDate:v('g-approved'), cardDate:v('g-card'), startDate:v('g-start'), endDate:v('g-end'),
     jobStart:v('g-job'), extraDays: Math.max(0, Math.min(365, Math.floor(Number($('#g-extra').value) || 0))), stemOn: $('#g-stem').checked, stemDso:v('g-sdso'), stemFiled:v('g-sfiled'), stemApproved:v('g-sappr') };
   await saveSettings({ gradDate: v('g-date'), opt: opt });
   closeModal(); toast('已保存');
@@ -1843,6 +1919,13 @@ document.addEventListener('click', function(e){
     else if (a === 'done'){
       const app = S.apps.find(x => x.id === act.dataset.id), evId = act.dataset.ev;
       if (app) patchEvents(app, evs => evs.map(x => x.id === evId ? setDone(x, true) : x)).then(ok => { if (ok) openNext(app.id, evId, null); });
+    }
+    else if (a === 'missed'){
+      const app = S.apps.find(x => x.id === act.dataset.id), evId = act.dataset.ev;
+      if (app) patchEvents(app, evs => evs.map(x => x.id === evId ? setMissed(x, true) : x)).then(ok => { if (ok) toast(app.company + '：OA 已标为过期没做'); });
+    }
+    else if (a === 'toggle-missed'){
+      const app = cur(); if (app) patchEvents(app, evs => evs.map(x => x.id === act.dataset.ev ? setMissed(x, true) : x));
     }
     else if (a === 'next') openNext(act.dataset.id, act.dataset.ev, act);
     else if (a === 'nx-pick') pickNext(act.dataset.k);
@@ -1901,7 +1984,7 @@ document.addEventListener('change', function(e){
   if (e.target.id === 'status'){
     S.status = e.target.value;
     // 看 OA / 面试 / Offer / 拒信 / 撤回时，最关心的是最近的进展，自动按最近进展排；回到全部或已投递就按投递日期排
-    S.sort = ['oa', 'interview', 'offer', 'rejected', 'withdrawn'].indexOf(S.status) >= 0 ? 'recent' : 'applied';
+    S.sort = ['oa', 'expired', 'interview', 'offer', 'rejected', 'withdrawn'].indexOf(S.status) >= 0 ? 'recent' : 'applied';
     $('#sort').value = S.sort; render();
   }
   else if (e.target.id === 'sort'){ S.sort = e.target.value === 'recent' ? 'recent' : 'applied'; render(); }
@@ -1914,6 +1997,7 @@ document.addEventListener('change', function(e){
   else if (e.target.id === 'ev-kind') syncDue();
   else if (e.target.id === 'g-on') $('#g-opt').hidden = !e.target.checked;
   else if (e.target.id === 'g-stem') $('#g-stemwrap').hidden = !e.target.checked;
+  else if (e.target.id === 'g-pp') $('#g-ppwrap').hidden = !e.target.checked;
   else if (e.target.id === 'imp-file'){
     const f = e.target.files && e.target.files[0]; if (!f) return;
     const rd = new FileReader();
