@@ -8,10 +8,10 @@
 
 - **每天投递**：今日投递数和每日目标、近 7 天、日均、连续投递天数。支持单个添加，也支持一次粘贴多行批量添加（`公司, 职位`）。
 - **New Grad / Intern 自动区分**：只看职位名，名字里有 intern / internship / co-op / 实习 才算 Intern，其余（包括没写职位名的）都算 New Grad（全职）。批量添加和邮件解析都按这条规则，也可以手动改。
-- **进展漏斗**：投递 → OA → 面试 → Offer 的数量和比例，另有暂无回音、已拒、主动撤回。
+- **进展漏斗**：投递 → OA → 面试 → Offer 的数量和比例，另有暂无回音、OA 过期、已拒、主动撤回。
 - **进度图**：点「进度图」，把「投递 → 有回音 / 没回音 → OA → 面试 → Offer / 被拒 / 撤回 / 进行中」的流向画成一张 Sankey 图，可以按类型和投递日期筛选，图里的文字可选英文或中文，保存成 PNG 图片分享。见下文。
 - **最近 21 天图表**：每天投递数（New Grad / Intern 分色），OA 和面试出现的日期有标记。
-- **待办 OA 和面试**：按截止日期排序，逾期标红；没填日期的 OA 也会列出来提醒你补。点「完成」后会接着问你「接下来怎么样了」：又一轮 OA / 面试、Offer、拒信、撤回，都可以直接记下来；还没消息就选「还没消息」，它会留在下面的「等结果」里，写着已经等了几天，之后随时点「更新进展」补上，不会消失。
+- **待办 OA 和面试**：按截止日期排序，逾期标红；没填日期的 OA 也会列出来提醒你补。OA 过了截止日期还没做的，旁边有「过期没做」：点了它就不再出现在待办里，这条投递的状态变成「OA 过期」（可以按它筛选，漏斗和进度图里也单独算一类）；后来公司又给了新进展，状态会跟着变。点「完成」后会接着问你「接下来怎么样了」：又一轮 OA / 面试、Offer、拒信、撤回，都可以直接记下来；还没消息就选「还没消息」，它会留在下面的「等结果」里，写着已经等了几天，之后随时点「更新进展」补上，不会消失。
 - **投递记录**：按投递日期分组，可搜索、按状态和类型筛选，也可以改成「按最近进展」排序，新的拒信、OA、面试排在最前面（选「已拒」「OA」「面试中」等状态时会自动这样排）；每条投递有进展时间线（OA、电话面、技术面、Offer、拒信、撤回）。
 - **粘贴邮件解析**：把招聘邮件贴进来，识别公司、职位、邮件类型和日期，确认后再保存。见下文。
 - **毕业倒计时 + OPT 追踪**：自己填毕业日期，显示倒计时；F-1 学生可以开启 OPT 追踪。见下文。
@@ -63,8 +63,10 @@
 | 步骤 | 页面使用的规则 |
 |---|---|
 | 向 DSO 申请 OPT 推荐 | 最早毕业前 90 天可申请；学校常要求更早，以 DSO 为准 |
-| 向 USCIS 递交 I-765 | 最早毕业前 90 天、最晚毕业后 60 天；并且要在 DSO 在 SEVIS 里做 OPT 推荐后 30 天内送达 |
-| Receipt Notice、获批、EAD | 记录日期；EAD 开始日期之前不能工作 |
+| 向 USCIS 递交 I-765 | 最早毕业前 90 天、最晚毕业后 60 天；并且要在 DSO 在 SEVIS 里做 OPT 推荐后 30 天内送达。可以记下 I-765 上申请的开始日期，毕业后 OPT 的开始日期最晚是毕业后 60 天 |
+| 加急（Premium Processing） | 可以在递交时、也可以在 I-765 还在处理中时另交 I-907。USCIS 要在 **30 个工作日**内处理，**从 USCIS 收到 I-907 起算**，不是 I-765 的递交日；收到补件通知（RFE）会停表，回复被收到后重新计 30 个工作日；超过期限要退还加急费。页面按「去掉周末和美国联邦假日」估算期限，只是估算。没有加急的显示「普通处理」和已经等了几天，没有固定期限 |
+| 指纹 / 拍照（Biometrics） | 不是每个人都有：收到 USCIS 的预约通知（I-797C）才需要去，填上预约日期会倒计时；缺席可能被拒，去不了要在预约日之前改期。USCIS 官网没写加急会不会等指纹，以通知为准 |
+| Receipt Notice、获批、EAD 卡 | 记录日期。要**同时**满足三件事才能开始工作：USCIS 已批准、EAD 卡到手、卡上的开始日期已到，页面会写出「现在还不能工作，还差……」。加急只会让审批更快，能不能工作仍要看卡上的开始日期 |
 | OPT 到期 | 未填 EAD 结束日时，按开始日期推算 12 个月 |
 | 失业天数 | 从 EAD 开始日起算，上限 90 天；STEM 延期获批后合计 150 天 |
 | STEM OPT 延期 | 24 个月；最早 OPT 到期前 90 天可递交，必须在到期前递交，并且在 DSO 的 STEM 推荐后 60 天内 |
@@ -72,6 +74,8 @@
 **这些日期只作提醒，不是法律意见。** 规则会变化，每个学校的流程也不同，请以你学校 DSO 的要求和官方说明为准：
 
 - [Study in the States：Applying for Practical Training](https://studyinthestates.dhs.gov/students/work/applying-for-practical-training)
+- [USCIS：How Do I Request Premium Processing?](https://www.uscis.gov/forms/all-forms/how-do-i-request-premium-processing)
+- [USCIS：Form I-765](https://www.uscis.gov/i-765)
 - [USCIS：STEM OPT 延期](https://www.uscis.gov/working-in-the-united-states/students-and-exchange-visitors/optional-practical-training-extension-for-stem-students-stem-opt)
 - [USCIS Policy Manual：Practical Training](https://www.uscis.gov/policy-manual/volume-2-part-f-chapter-5)
 
@@ -100,15 +104,19 @@ OA、面试、拒信都是对某次申请的**回复**，不是新的申请，�
 apps/<id>         一条投递
   company, role, track ("ng" | "intern"), appliedOn (YYYY-MM-DD),
   link, location, notes, src?, uncounted?, createdAt, updatedAt,
-  events: [{ id, kind, date, due?, note?, src?, done, doneOn? }]
+  events: [{ id, kind, date, due?, note?, src?, done, doneOn?, missed? }]
           kind: oa | screen | interview | offer | rejected | withdrawn
           src: 来源邮件 ID（同步邮箱时记录，用来跳过已经处理过的邮件）
           doneOn: 标为完成的日期（「等结果」里算已经等了几天）
+          missed: true 表示这条 OA 过了截止日期没做（同时 done=true；最后一个进展是它时状态为「OA 过期」）
           uncounted: true 表示不计入投递数（见下）
 meta/settings     设置
   dailyGoal, gradDate,
-  opt: { on, dsoDate, filedDate, receiptDate, approvedDate, startDate, endDate,
-         jobStart, extraDays, stemOn, stemDso, stemFiled, stemApproved }
+  opt: { on, dsoDate, filedDate, reqStart, pp, ppDate, rfeDate, receiptDate, bioDate, bioDone,
+         approvedDate, cardDate, startDate, endDate, jobStart, extraDays,
+         stemOn, stemDso, stemFiled, stemApproved }
+       reqStart: I-765 上申请的开始日期；pp: 是否加急；ppDate: USCIS 收到 I-907 的日期；
+       rfeDate: RFE 回复被收到的日期；bioDate / bioDone: 指纹拍照预约日期 / 是否去过；cardDate: 收到 EAD 卡的日期
 ```
 
 投递的当前状态由最后一个进展推出，不单独存储。导出的备份文件格式是 `{ format: "job-application-tracker", version: 1, apps: [...], settings: {...} }`。
