@@ -110,6 +110,9 @@ apps/<id>         一条投递
           doneOn: 标为完成的日期（「等结果」里算已经等了几天）
           missed: true 表示这条 OA 过了截止日期没做（同时 done=true；最后一个进展是它时状态为「OA 过期」）
           uncounted: true 表示不计入投递数（见下）
+meta/mailsync     同步邮箱的进度
+  lastSync: 上次「完整」同步的日期（「自上次同步」从这天往后搜）
+  skip: 看过、不用再看的邮件 ID（不是求职邮件，或投递确认已经在记录里），最多留最近 600 个
 meta/settings     设置
   dailyGoal, gradDate,
   opt: { on, dsoDate, filedDate, reqStart, pp, ppDate, rfeDate, receiptDate, bioDate, bioDone,
@@ -124,6 +127,8 @@ meta/settings     设置
 ## 在 Claude 里运行
 
 同一个页面也可以作为 claude.ai 的 Artifact 运行：把 `index.html` 交给 Claude，让它发布成 Artifact，并启用 `db`、`sample` 和 `downloads`（保存进度图用）三个能力。页面检测到 `window.claude` 后，会自动把数据存进 Artifact 自己的数据库（页面底部的说明会随之变化），邮件解析也变成一键完成（通过你自己的 Claude 账号）。如果你在 claude.ai 里连接了 Gmail，还会多出「同步邮箱」按钮：页面只读地搜索求职相关的邮件，解析后列出来，你确认才保存（需要给页面读取 Gmail 的权限）。其他情况下自动使用浏览器本地存储。
+
+**同步邮箱怎么往前走：** 一次最多处理 150 封还没处理过的邮件（已经保存过的、看过不是求职邮件的、投递确认已经在记录里的，都不再占名额，搜索会一直翻页直到凑够）。邮件更多时会提示「这次先处理最新的 N 封」，保存后再点一次「开始搜索」会接着处理剩下的。只有这个时间范围里的邮件都处理完了，「自上次同步」的日期才会往前走；没有新邮件、或者没识别出求职邮件，也算处理完。
 
 ## 参与
 
