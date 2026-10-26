@@ -1150,11 +1150,14 @@ function syncMailItem(el){
 function syncMailSel(){
   const n = $$('.mail-item').filter(el => el.querySelector('[data-f=on]').checked).length;
   const el = $('#mail-sel'); if (el) el.textContent = '已选 ' + n + ' 项';
-  const b = $('#mail-save'); if (b) b.disabled = !n;
+  const b = $('#mail-save'), inSync = S.modal && S.modal.type === 'sync';
+  if (b){ b.disabled = !n && !inSync; b.textContent = inSync && !n ? '都不保存（这些邮件下次不再出现）' : '保存选中项'; }
 }
 async function saveMail(){
   const rows = $$('.mail-item').map(mailRow).filter(r => r.on);
-  if (!rows.length) return;
+  // 同步时列出来、但没勾选的：你已经看过并决定不要，记下来，下次不再出现
+  const declined = S.modal && S.modal.type === 'sync' ? $$('.mail-item').filter(el => !el.querySelector('[data-f=on]').checked).map(el => el.dataset.src).filter(Boolean) : [];
+  if (!rows.length && !declined.length) return;
   const bad = rows.find(r => !r.company);
   if (bad){ toast('有一项没有填公司名', true); return; }
   // 投递确认先建投递，进展按日期先后追加，避免拒信把投递日期带歪
@@ -1162,20 +1165,24 @@ async function saveMail(){
   const btn = $('#mail-save'); btn.disabled = true;
   const inSync = S.modal && S.modal.type === 'sync', syncDone = inSync && !S.modal.partial, syncMore = inSync && S.modal.partial;
   try {
-    const r = await applyItems(rows);
+    const r = rows.length ? await applyItems(rows) : { created:0, added:0, skipped:0, uncounted:0 };
     const parts = [];
     if (r.created - r.uncounted) parts.push('新建 ' + (r.created - r.uncounted) + ' 条投递');
     if (r.uncounted) parts.push(r.uncounted + ' 封邮件没有对应的投递，已记下但不计入投递数');
     if (r.added) parts.push('添加 ' + r.added + ' 条进展');
     if (r.skipped) parts.push('跳过 ' + r.skipped + ' 条已有投递');
-    if (syncDone) await syncMeta({ lastSync: todayStr() });
+    const meta = {};
+    if (syncDone) meta.lastSync = todayStr();
+    if (declined.length) meta.skip = (Array.isArray(S.mailsync.skip) ? S.mailsync.skip : []).concat(declined).slice(-SYNC.skipKeep);
+    if (Object.keys(meta).length) await syncMeta(meta);
+    if (!rows.length){ closeModal(); toast('没有保存。这 ' + declined.length + ' 封邮件下次不会再出现'); return; }
     closeModal(); toast('已保存：' + (parts.join('，') || '没有变化') + (syncMore ? '。还有更多邮件没处理，再同步一次会接着来' : ''), false, syncMore ? 6000 : 0);
   } catch(e){ fail(e); btn.disabled = false; }
 }
 
 /* ---------- sync from Gmail (read-only: search_threads, get_thread, get_message) ---------- */
 const GMAIL = 'Gmail';
-const SYNC = { pagesMax:10, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:600 };
+const SYNC = { pagesMax:10, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:3000 };
 const GMAIL_TOPIC = 'subject:(application OR applying OR applied OR assessment OR interview OR "coding challenge" OR "take-home" OR offer OR "next steps" OR candidacy OR "phone screen" OR "thank you for your interest" OR unfortunately OR "moving forward")';
 const GMAIL_FROM = 'from:(greenhouse OR lever OR ashbyhq OR workday OR myworkday OR icims OR smartrecruiters OR jobvite OR workable OR hackerrank OR codesignal OR hirevue OR codility OR karat OR recruiting OR careers OR talent OR hiring)';
 const GMAIL_SKIP = '-subject:("security code" OR "verification code" OR "verify your" OR password OR "confirm your email")';
@@ -1232,10 +1239,10 @@ function syncWindow(range){
 }
 
 // 已经保存过的邮件（事件或新建的投递上记着邮件 ID），不再重复处理
-function syncSeen(){
+function syncSeen(recheck){
   const s = new Set();
   S.apps.forEach(a => { if (a.src) s.add(a.src); (a.events || []).forEach(e => { if (e && e.src) s.add(e.src); }); });
-  (Array.isArray(S.mailsync.skip) ? S.mailsync.skip : []).forEach(id => { if (typeof id === 'string') s.add(id); });   // 看过、不是求职邮件或已经在记录里的
+  if (!recheck) (Array.isArray(S.mailsync.skip) ? S.mailsync.skip : []).forEach(id => { if (typeof id === 'string') s.add(id); });   // 看过、确认过、不是求职邮件或已经在记录里的
   return s;
 }
 // meta/mailsync：lastSync = 上次完整同步的日期；skip = 检查过、不用再看的邮件 ID（不会删掉别的字段）
@@ -1244,9 +1251,14 @@ function syncMeta(patch){
   return save(() => S.db.doc('meta/mailsync').set(S.mailsync)).catch(function(){});
 }
 
-async function syncSearch(win, signal, progress){
+// 记录里已经有同一件事（同一家公司和职位、同类进展，日期或截止日期一样；拒信、Offer 有过就算）：不再列出来让人确认，保存只会多出一条重复的
+function alreadyRecorded(it){
+  const a = findApp(S.apps, it.company, it.role); if (!a) return false;
+  return (a.events || []).some(e => e.kind === it.kind && (it.kind === 'rejected' || it.kind === 'offer' || e.date === it.date || (it.due && e.due === it.due)));
+}
+async function syncSearch(win, signal, progress, recheck){
   const q = [win.q, '-in:spam -in:trash -in:sent -in:draft -category:promotions -category:social', '(' + GMAIL_TOPIC + ' OR ' + GMAIL_FROM + ')', GMAIL_SKIP].join(' ');
-  const seen = syncSeen(), threads = []; let token = '', more = false, fresh = 0;
+  const seen = syncSeen(recheck), threads = []; let token = '', more = false, fresh = 0;
   // 最新的邮件多半已经处理过了：一直翻页，直到凑够没处理过的，而不是只看最新的几页
   for (let p = 0; p < SYNC.pagesMax; p++){
     const input = { query: q, pageSize: 50, view: 'THREAD_VIEW_MINIMAL' };
@@ -1271,8 +1283,8 @@ async function syncSearch(win, signal, progress){
   return { threads: threads, more: more };
 }
 
-function syncMessages(threads, fromMs){
-  const seen = syncSeen(), ids = new Set(), out = [];
+function syncMessages(threads, fromMs, recheck){
+  const seen = syncSeen(recheck), ids = new Set(), out = [];
   let again = 0;
   threads.forEach(t => (Array.isArray(t.messages) ? t.messages : []).forEach(function(m){
     if (!m || typeof m.id !== 'string' || ids.has(m.id)) return;
@@ -1338,6 +1350,7 @@ function openSync(opener){
     '<div class="stack"><div class="sync-bar"><label class="field"><span class="lbl">时间范围</span><select id="sync-range">' +
       opts.map(o => '<option value="' + o[0] + '"' + (o[0] === sel ? ' selected' : '') + '>' + o[1] + '</option>').join('') +
     '</select></label><button type="button" class="btn primary" data-act="sync-go" id="sync-go">开始搜索</button></div>' +
+    '<label class="chk"><input type="checkbox" id="sync-recheck">重新检查已经看过的邮件（默认不再重复读、不再重复确认）</label>' +
     '<p class="hint">只读：页面只能搜索和读取邮件，不能发信、删信或改标签。搜到的邮件先解析成识别结果，你确认后才会保存，不会自动改你的记录。邮件的发件人、主题和内容（验证码类邮件除外）只发给你自己的 Claude 账号来识别，不会存进页面。</p>' +
     '<div id="sync-status"></div><div id="mail-out"></div></div>', opener);
 }
@@ -1353,8 +1366,9 @@ async function runSync(){
   try {
     const win = syncWindow($('#sync-range').value);
     say('正在搜索 Gmail…第一次使用会先问你是否允许页面读取 Gmail。');
-    const found = await syncSearch(win, ctl.signal, n => say('正在搜索 Gmail…已找到 ' + n + ' 个会话'));
-    const sm = syncMessages(found.threads, win.from);
+    const recheck = !!($('#sync-recheck') && $('#sync-recheck').checked);
+    const found = await syncSearch(win, ctl.signal, n => say('正在搜索 Gmail…已找到 ' + n + ' 个会话'), recheck);
+    const sm = syncMessages(found.threads, win.from, recheck);
     let msgs = sm.msgs;
     if (msgs.length > SYNC.maxMsgs){ msgs = msgs.slice(0, SYNC.maxMsgs); found.more = true; }
     m.partial = found.more;
@@ -1391,6 +1405,7 @@ async function runSync(){
     const dup = new Set(); let hidden = 0;
     items = items.filter(function(it){
       if (it.kind === 'applied' && findApp(S.apps, it.company, it.role)){ hidden++; return false; }
+      if (it.kind !== 'applied' && alreadyRecorded(it)){ hidden++; return false; }
       const key = [it.company.toLowerCase(), it.kind, it.kind === 'applied' ? it.role.toLowerCase() : it.date + '|' + it.due].join('|');
       if (dup.has(key)) return false;
       dup.add(key); return true;
@@ -1405,7 +1420,7 @@ async function runSync(){
     if (S.modal !== m) return;
     box.innerHTML = '<p class="sync-sum">' + [
       '读取了 ' + msgs.length + ' 封邮件，识别出 ' + items.length + ' 项',
-      hidden ? hidden + ' 项投递确认已经在记录里，没有再列出' : '',
+      hidden ? hidden + ' 项已经在记录里，没有再列出' : '',
       sm.again ? sm.again + ' 封之前同步过，已跳过' : '',
       pick.length > chosen.length ? '只核对了前 ' + chosen.length + ' 封的正文' : '',
       m.partial ? '邮件太多，这次先处理最新的 ' + msgs.length + ' 封；保存后再点一次「开始搜索」，会接着处理剩下的' : ''
