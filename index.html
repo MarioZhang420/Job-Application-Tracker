@@ -1163,7 +1163,7 @@ async function saveMail(){
   // 投递确认先建投递，进展按日期先后追加，避免拒信把投递日期带歪
   rows.sort((a, b) => (a.kind === 'applied' ? 0 : 1) - (b.kind === 'applied' ? 0 : 1) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const btn = $('#mail-save'); btn.disabled = true;
-  const inSync = S.modal && S.modal.type === 'sync', syncDone = inSync && !S.modal.partial, syncMore = inSync && S.modal.partial;
+  const inSync = S.modal && S.modal.type === 'sync', syncDone = inSync && !S.modal.partial && !S.modal.incomplete, syncMore = inSync && (S.modal.partial || S.modal.incomplete);
   try {
     const r = rows.length ? await applyItems(rows) : { created:0, added:0, skipped:0, uncounted:0 };
     const parts = [];
@@ -1269,7 +1269,7 @@ function alreadyRecorded(it){
   const a = findApp(S.apps, it.company, it.role); if (!a) return false;
   return (a.events || []).some(e => e.kind === it.kind && (it.kind === 'rejected' || it.kind === 'offer' || e.date === it.date || (it.due && e.due === it.due)));
 }
-async function syncSearch(win, signal, progress, recheck, wait){
+async function syncSearch(win, signal, progress, recheck, wait, detail){
   const q = [win.q, '-in:spam -in:trash -in:sent -in:draft -category:promotions -category:social', '(' + GMAIL_TOPIC + ' OR ' + GMAIL_FROM + ')', GMAIL_SKIP].join(' ');
   const seen = syncSeen(recheck), threads = []; let token = '', more = false, fresh = 0, limited = false;
   // 最新的邮件多半已经处理过了：一直翻页，直到凑够没处理过的，而不是只看最新的几页
@@ -1290,13 +1290,23 @@ async function syncSearch(win, signal, progress, recheck, wait){
     if (!token) break;
     if (fresh >= SYNC.maxMsgs || p === SYNC.pagesMax - 1){ more = true; break; }
   }
-  // 搜索结果里每个会话只有最早的几封，邮件较多的会话补读完整
-  const long = threads.filter(t => (Number(t.messageCount) || 0) > (Array.isArray(t.messages) ? t.messages.length : 0)).slice(0, 10);
-  for (const t of long){
+  // 搜索结果有时只有 ID、发件人和标题，没有日期、预览、标签（Gmail 工具返回的内容会变）：没处理过的会话要读一下完整内容才有日期。
+  // 另外，搜索结果里每个会话只有最早的几封，邮件较多的会话也补读完整
+  const msgsOf = t => Array.isArray(t.messages) ? t.messages : [];
+  const thin = threads.filter(t => msgsOf(t).some(m => m && !m.internalDate && !m.date) && msgsOf(t).some(m => m && !seen.has(m.id))).slice(0, SYNC.maxMsgs);
+  const long = threads.filter(t => thin.indexOf(t) < 0 && (Number(t.messageCount) || 0) > msgsOf(t).length).slice(0, 10);
+  const need = thin.concat(long);
+  for (let i = 0; i < need.length; i++){
+    const t = need[i];
     await sleep(300, signal);
+    if (detail) detail(i + 1, need.length);
     let r;
     try { r = await gmail('get_thread', { threadId: t.id, messageFormat: 'MINIMAL' }, signal, wait); }
-    catch(e){ if (isQuota(e)){ limited = true; break; } throw e; }
+    catch(e){
+      if (isQuota(e)){ limited = true; break; }
+      if (e && e.code === 'tool_error') continue;   // 这个会话读不出来：先跳过，不要整个同步失败（它会被算作「读不到日期」）
+      throw e;
+    }
     if (Array.isArray(r.messages) && r.messages.length) t.messages = r.messages;
   }
   return { threads: threads, more: more, limited: limited };
@@ -1304,21 +1314,22 @@ async function syncSearch(win, signal, progress, recheck, wait){
 
 function syncMessages(threads, fromMs, recheck){
   const seen = syncSeen(recheck), ids = new Set(), out = [];
-  let again = 0;
+  let again = 0, undated = 0;
   threads.forEach(t => (Array.isArray(t.messages) ? t.messages : []).forEach(function(m){
     if (!m || typeof m.id !== 'string' || ids.has(m.id)) return;
     ids.add(m.id);
     const labels = Array.isArray(m.labelIds) ? m.labelIds : [];
     if (['SENT', 'DRAFT', 'SPAM', 'TRASH'].some(l => labels.indexOf(l) >= 0)) return;
     const ms = Number(m.internalDate) || Date.parse(m.date) || 0;
-    if (!ms || ms < fromMs) return;
+    if (!ms){ if (seen.has(m.id)) again++; else undated++; return; }   // 读不到日期的不能当成「没有新邮件」
+    if (ms < fromMs) return;
     const subject = decodeHtml(m.subject).trim();
     if (NOISE_RE.test(subject)) return;
     if (seen.has(m.id)){ again++; return; }
     out.push({ id: m.id, ms: ms, date: ymd(new Date(ms)), sender: String(m.sender || '').slice(0, 120), subject: subject.slice(0, 200), snippet: decodeHtml(m.snippet).trim().slice(0, 400), url: gmailUrl(m.viewUrl) });
   }));
   out.sort((a, b) => b.ms - a.ms);
-  return { msgs: out, again: again };
+  return { msgs: out, again: again, undated: undated };
 }
 
 async function syncParse(msgs, bodies, size, signal, progress){
@@ -1393,16 +1404,18 @@ async function runSync(){
     const win = syncWindow($('#sync-range').value);
     say('正在搜索 Gmail…第一次使用会先问你是否允许页面读取 Gmail。');
     const recheck = !!($('#sync-recheck') && $('#sync-recheck').checked);
-    const found = await syncSearch(win, ctl.signal, n => say('正在搜索 Gmail…已找到 ' + n + ' 个会话'), recheck, wait);
+    const found = await syncSearch(win, ctl.signal, n => say('正在搜索 Gmail…已找到 ' + n + ' 个会话'), recheck, wait, (i, n) => say('读取邮件的日期和内容…（' + i + ' / ' + n + '）'));
     const sm = syncMessages(found.threads, win.from, recheck);
     let msgs = sm.msgs;
     if (msgs.length > SYNC.maxMsgs){ msgs = msgs.slice(0, SYNC.maxMsgs); found.more = true; }
-    m.partial = found.more;
+    m.partial = found.more || found.limited;
+    m.incomplete = sm.undated > 0;   // 有邮件读不到日期：这次没处理完整，不能推进「上次同步」
     if (found.limited) coolStart(SYNC.coolSoon); else ls.set('jt-gmail-cool-n', '0');
     if (!msgs.length){
       box.innerHTML = '<p class="sync-sum">' + (found.threads.length ? '没有需要处理的新邮件' + (sm.again ? '（' + sm.again + ' 封之前同步过）' : '') + '。' : '这个时间范围里没有找到求职相关的邮件。') +
+        (m.incomplete ? sm.undated + ' 封邮件读不到日期，这次没能处理，过几分钟再点一次「开始搜索」。' : '') +
         (m.partial ? (found.limited ? 'Gmail 暂时限流了，过几分钟再点一次「开始搜索」会接着找。' : '再点一次「开始搜索」会接着往下找。') : '') + '</p>';
-      if (!m.partial) syncMeta({ lastSync: todayStr() });
+      if (!m.partial && !m.incomplete && found.threads.length) syncMeta({ lastSync: todayStr() });
       return;
     }
 
@@ -1450,11 +1463,12 @@ async function runSync(){
       hidden ? hidden + ' 项已经在记录里，没有再列出' : '',
       sm.again ? sm.again + ' 封之前同步过，已跳过' : '',
       pick.length > chosen.length ? '只核对了前 ' + chosen.length + ' 封的正文' : '',
+      m.incomplete ? sm.undated + ' 封邮件读不到日期，这次没能处理，过几分钟再点一次' : '',
       m.partial ? (found.limited ? 'Gmail 暂时限流了，这次先处理已经找到的 ' + msgs.length + ' 封；过几分钟再点一次「开始搜索」，会接着处理剩下的' : '邮件太多，这次先处理最新的 ' + msgs.length + ' 封；保存后再点一次「开始搜索」，会接着处理剩下的') : ''
     ].filter(Boolean).join('；') + '。</p>';
     if (!items.length){
       out.innerHTML = '<p class="empty-note">没有识别到需要保存的求职邮件。' + (m.partial ? '再点一次「开始搜索」会接着处理剩下的。' : '') + '</p>';
-      if (!m.partial) syncMeta({ lastSync: todayStr() });
+      if (!m.partial && !m.incomplete) syncMeta({ lastSync: todayStr() });
       return;
     }
     renderMailItems(items);
