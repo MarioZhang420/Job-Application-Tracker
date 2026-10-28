@@ -1182,7 +1182,7 @@ async function saveMail(){
 
 /* ---------- sync from Gmail (read-only: search_threads, get_thread, get_message) ---------- */
 const GMAIL = 'Gmail';
-const SYNC = { pagesMax:10, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:3000, pageGap:2500, waits:[5000, 15000, 30000] };
+const SYNC = { pagesMax:20, pageSize:25, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:3000, pageGap:3000, waits:[5000, 15000, 30000], cool:[10, 30, 60], coolSoon:5 };
 const GMAIL_TOPIC = 'subject:(application OR applying OR applied OR assessment OR interview OR "coding challenge" OR "take-home" OR offer OR "next steps" OR candidacy OR "phone screen" OR "thank you for your interest" OR unfortunately OR "moving forward")';
 const GMAIL_FROM = 'from:(greenhouse OR lever OR ashbyhq OR workday OR myworkday OR icims OR smartrecruiters OR jobvite OR workable OR hackerrank OR codesignal OR hirevue OR codility OR karat OR recruiting OR careers OR talent OR hiring)';
 const GMAIL_SKIP = '-subject:("security code" OR "verification code" OR "verify your" OR password OR "confirm your email")';
@@ -1198,7 +1198,7 @@ const emailText = (m, i, body) => '[#' + (i + 1) + ']\nFrom: ' + m.sender + '\nS
 function syncErr(e, phase){
   if (phase === 'claude') return sampleErr(e);
   const c = e && e.code;
-  if (isQuota(e)) return 'Gmail 说请求额度用完了（短时间内读得太多，或者今天的额度到了）。已经自动等了几次。过几分钟再点「开始搜索」；已经处理过的邮件不会重复读。';
+  if (isQuota(e)) return 'Gmail 说它的读取额度用完了（短时间内读得太多，或者今天的额度到了），已经自动等了几次还是不行。请等到 ' + clock(Date.now() + Math.max(coolLeft(), 60000)) + ' 之后再点「开始搜索」，现在连着点只会让它拖得更久。已经处理过的邮件不会重复读。';
   return c === 'server_not_connected' || c === 'selection_required' || c === 'server_not_found' ? 'Gmail 还没有连接。到 claude.ai 的「设置 → 连接器」添加 Gmail，再回来重试。' :
     c === 'needs_reauth' ? 'Gmail 的登录过期了。到 claude.ai 的「设置 → 连接器」重新连接 Gmail，再回来重试。' :
     c === 'not_in_manifest' || c === 'consent_required' || c === 'approval_required' ? '你没有允许这个页面读取 Gmail。再点一次「开始搜索」，在弹出的窗口里选择允许。' :
@@ -1210,6 +1210,11 @@ function syncErr(e, phase){
     '读取 Gmail 失败，请稍后再试。';
 }
 
+// Gmail 额度用完之后，几分钟内再去读只会继续被拒、还会拖得更久：记一个冷却时间，期间不再去读
+let coolUntil = 0;   // 浏览器不让存时，至少在这次打开页面期间有效
+const coolLeft = () => Math.max(0, Math.max(coolUntil, Number(ls.get('jt-gmail-cool')) || 0) - Date.now());
+function coolStart(minutes){ coolUntil = Date.now() + minutes * 60000; ls.set('jt-gmail-cool', String(coolUntil)); }
+const clock = ms => { const d = new Date(ms); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
 const sleep = (ms, signal) => new Promise(function(res, rej){
   if (signal && signal.aborted) return rej({ code:'cancelled' });
   const t = setTimeout(res, ms);
@@ -1270,7 +1275,7 @@ async function syncSearch(win, signal, progress, recheck, wait){
   // 最新的邮件多半已经处理过了：一直翻页，直到凑够没处理过的，而不是只看最新的几页
   for (let p = 0; p < SYNC.pagesMax; p++){
     if (p > 0) await sleep(SYNC.pageGap, signal);   // 每页要读 50 个会话，连着翻太快 Gmail 会限流
-    const input = { query: q, pageSize: 50, view: 'THREAD_VIEW_MINIMAL' };
+    const input = { query: q, pageSize: SYNC.pageSize, view: 'THREAD_VIEW_MINIMAL' };
     if (token) input.pageToken = token;
     let r;
     try { r = await gmail('search_threads', input, signal, wait); }
@@ -1286,7 +1291,7 @@ async function syncSearch(win, signal, progress, recheck, wait){
     if (fresh >= SYNC.maxMsgs || p === SYNC.pagesMax - 1){ more = true; break; }
   }
   // 搜索结果里每个会话只有最早的几封，邮件较多的会话补读完整
-  const long = threads.filter(t => (Number(t.messageCount) || 0) > (Array.isArray(t.messages) ? t.messages.length : 0)).slice(0, 15);
+  const long = threads.filter(t => (Number(t.messageCount) || 0) > (Array.isArray(t.messages) ? t.messages.length : 0)).slice(0, 10);
   for (const t of long){
     await sleep(300, signal);
     let r;
@@ -1348,7 +1353,7 @@ async function syncBodies(list, signal, progress, wait){
       progress(++n, list.length);
     }
   }
-  await Promise.all([worker(), worker(), worker()]);
+  await Promise.all([worker(), worker()]);
   return bodies;
 }
 
@@ -1372,11 +1377,17 @@ function openSync(opener){
 async function runSync(){
   const m = S.modal;
   if (!m || m.type !== 'sync' || m.ctl) return;
+  if (coolLeft() > 0 && !m.force){
+    $('#sync-status').innerHTML = '<p class="empty-note" style="color:var(--warn)">Gmail 刚说过它的额度用完了。请等到 ' + clock(Date.now() + coolLeft()) + ' 之后再点（还有约 ' + Math.ceil(coolLeft() / 60000) + ' 分钟）；现在连着点只会让它拖得更久。</p>' +
+      '<p><button type="button" class="btn sm" data-act="sync-force">我知道，现在就试一次</button></p>';
+    return;
+  }
+  m.force = false;
   const ctl = new AbortController(); m.ctl = ctl; m.partial = false;
   const btn = $('#sync-go'), box = $('#sync-status'), out = $('#mail-out');
   btn.disabled = true; out.innerHTML = '';
   const say = html => { if (S.modal === m) box.innerHTML = '<p class="hint">' + html + ' <button type="button" class="btn sm" data-act="mail-stop">停止</button></p>'; };
-  const wait = w => say('Gmail 请求太频繁了，等 ' + Math.round(w / 1000) + ' 秒再试…');
+  const wait = w => say('Gmail 暂时不让读了（它的额度用完了，不是你的设置问题），等 ' + Math.round(w / 1000) + ' 秒再试…');
   let phase = 'gmail';
   try {
     const win = syncWindow($('#sync-range').value);
@@ -1387,6 +1398,7 @@ async function runSync(){
     let msgs = sm.msgs;
     if (msgs.length > SYNC.maxMsgs){ msgs = msgs.slice(0, SYNC.maxMsgs); found.more = true; }
     m.partial = found.more;
+    if (found.limited) coolStart(SYNC.coolSoon); else ls.set('jt-gmail-cool-n', '0');
     if (!msgs.length){
       box.innerHTML = '<p class="sync-sum">' + (found.threads.length ? '没有需要处理的新邮件' + (sm.again ? '（' + sm.again + ' 封之前同步过）' : '') + '。' : '这个时间范围里没有找到求职相关的邮件。') +
         (m.partial ? (found.limited ? 'Gmail 暂时限流了，过几分钟再点一次「开始搜索」会接着找。' : '再点一次「开始搜索」会接着往下找。') : '') + '</p>';
@@ -1447,6 +1459,10 @@ async function runSync(){
     }
     renderMailItems(items);
   } catch(e){
+    if (isQuota(e) && phase === 'gmail'){   // 重试几次还是被拒：先歇一阵，别再连着点
+      const n = Number(ls.get('jt-gmail-cool-n')) || 0;
+      coolStart(SYNC.cool[Math.min(n, SYNC.cool.length - 1)]); ls.set('jt-gmail-cool-n', String(n + 1));
+    }
     if (S.modal === m){
       box.innerHTML = e && e.code === 'cancelled' ? '<p class="hint">已停止。</p>' : '<p class="empty-note" style="color:var(--warn)">' + esc(syncErr(e, phase)) + '</p>' +
         (e && (e.code === 'not_in_manifest' || e.code === 'consent_required' || e.code === 'approval_required' || e.code === 'not_granted') ? '<p><button type="button" class="btn sm" data-act="open-perms">打开权限设置</button></p>' : '');
@@ -2002,6 +2018,7 @@ document.addEventListener('click', function(e){
     else if (a === 'sk-save') saveSankey();
     else if (a === 'open-sync') openSync(act);
     else if (a === 'sync-go') runSync();
+    else if (a === 'sync-force'){ if (S.modal && S.modal.type === 'sync'){ S.modal.force = true; coolUntil = 0; ls.set('jt-gmail-cool', ''); runSync(); } }
     else if (a === 'mail-all' || a === 'mail-none'){
       $$('.mail-item').forEach(el => { el.querySelector('[data-f=on]').checked = a === 'mail-all'; syncMailItem(el); });
       syncMailSel();
