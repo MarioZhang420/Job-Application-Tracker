@@ -1182,7 +1182,7 @@ async function saveMail(){
 
 /* ---------- sync from Gmail (read-only: search_threads, get_thread, get_message) ---------- */
 const GMAIL = 'Gmail';
-const SYNC = { pagesMax:10, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:3000 };
+const SYNC = { pagesMax:10, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:3000, pageGap:2500, waits:[5000, 15000, 30000] };
 const GMAIL_TOPIC = 'subject:(application OR applying OR applied OR assessment OR interview OR "coding challenge" OR "take-home" OR offer OR "next steps" OR candidacy OR "phone screen" OR "thank you for your interest" OR unfortunately OR "moving forward")';
 const GMAIL_FROM = 'from:(greenhouse OR lever OR ashbyhq OR workday OR myworkday OR icims OR smartrecruiters OR jobvite OR workable OR hackerrank OR codesignal OR hirevue OR codility OR karat OR recruiting OR careers OR talent OR hiring)';
 const GMAIL_SKIP = '-subject:("security code" OR "verification code" OR "verify your" OR password OR "confirm your email")';
@@ -1198,6 +1198,7 @@ const emailText = (m, i, body) => '[#' + (i + 1) + ']\nFrom: ' + m.sender + '\nS
 function syncErr(e, phase){
   if (phase === 'claude') return sampleErr(e);
   const c = e && e.code;
+  if (isQuota(e)) return 'Gmail 说请求额度用完了（短时间内读得太多，或者今天的额度到了）。已经自动等了几次。过几分钟再点「开始搜索」；已经处理过的邮件不会重复读。';
   return c === 'server_not_connected' || c === 'selection_required' || c === 'server_not_found' ? 'Gmail 还没有连接。到 claude.ai 的「设置 → 连接器」添加 Gmail，再回来重试。' :
     c === 'needs_reauth' ? 'Gmail 的登录过期了。到 claude.ai 的「设置 → 连接器」重新连接 Gmail，再回来重试。' :
     c === 'not_in_manifest' || c === 'consent_required' || c === 'approval_required' ? '你没有允许这个页面读取 Gmail。再点一次「开始搜索」，在弹出的窗口里选择允许。' :
@@ -1209,9 +1210,17 @@ function syncErr(e, phase){
     '读取 Gmail 失败，请稍后再试。';
 }
 
-// 只读调用：失败且标了 retryable 时，等一会儿重试一次
-async function gmail(tool, input, signal){
-  for (let n = 0; ; n++){
+const sleep = (ms, signal) => new Promise(function(res, rej){
+  if (signal && signal.aborted) return rej({ code:'cancelled' });
+  const t = setTimeout(res, ms);
+  if (signal) signal.addEventListener('abort', function(){ clearTimeout(t); rej({ code:'cancelled' }); }, { once:true });
+});
+// Gmail 说额度用完了（"Resource has been exhausted"）：多半是短时间读得太多，等一会儿就好
+const isQuota = e => !!e && (e.code === 'rate_limited' || e.code === 'quota_exceeded' || /exhausted|quota|rate.?limit|too many requests/i.test(String(e.message || '')));
+
+// 只读调用：额度用完时等 5 / 15 / 30 秒各重试一次；标了 retryable 的失败等一会儿重试一次
+async function gmail(tool, input, signal, onWait){
+  for (let n = 0, q = 0; ; n++){
     try {
       const r = await S.mcp.callTool(GMAIL, tool, input, { signal: signal });
       const p = r && r.payload;
@@ -1219,10 +1228,9 @@ async function gmail(tool, input, signal){
       if (p == null || p === '') return {};
       throw { code:'bad_shape' };
     } catch(e){
-      if (n === 0 && e && e.retryable && !(signal && signal.aborted)){
-        await new Promise(res => setTimeout(res, Math.min(5000, Math.max(800, e.retryAfterMs || 1500))));
-        continue;
-      }
+      if (signal && signal.aborted) throw e;
+      if (isQuota(e) && q < SYNC.waits.length){ const w = SYNC.waits[q++]; if (onWait) onWait(w); await sleep(w, signal); continue; }
+      if (n === 0 && e && e.retryable){ await sleep(Math.min(5000, Math.max(800, e.retryAfterMs || 1500)), signal); continue; }
       throw e;
     }
   }
@@ -1256,14 +1264,17 @@ function alreadyRecorded(it){
   const a = findApp(S.apps, it.company, it.role); if (!a) return false;
   return (a.events || []).some(e => e.kind === it.kind && (it.kind === 'rejected' || it.kind === 'offer' || e.date === it.date || (it.due && e.due === it.due)));
 }
-async function syncSearch(win, signal, progress, recheck){
+async function syncSearch(win, signal, progress, recheck, wait){
   const q = [win.q, '-in:spam -in:trash -in:sent -in:draft -category:promotions -category:social', '(' + GMAIL_TOPIC + ' OR ' + GMAIL_FROM + ')', GMAIL_SKIP].join(' ');
-  const seen = syncSeen(recheck), threads = []; let token = '', more = false, fresh = 0;
+  const seen = syncSeen(recheck), threads = []; let token = '', more = false, fresh = 0, limited = false;
   // 最新的邮件多半已经处理过了：一直翻页，直到凑够没处理过的，而不是只看最新的几页
   for (let p = 0; p < SYNC.pagesMax; p++){
+    if (p > 0) await sleep(SYNC.pageGap, signal);   // 每页要读 50 个会话，连着翻太快 Gmail 会限流
     const input = { query: q, pageSize: 50, view: 'THREAD_VIEW_MINIMAL' };
     if (token) input.pageToken = token;
-    const r = await gmail('search_threads', input, signal);
+    let r;
+    try { r = await gmail('search_threads', input, signal, wait); }
+    catch(e){ if (p > 0 && isQuota(e)){ limited = true; more = true; break; } throw e; }   // 已经找到的先处理，剩下的下次接着来
     (Array.isArray(r.threads) ? r.threads : []).forEach(function(t){
       if (!t || typeof t.id !== 'string') return;
       threads.push(t);
@@ -1277,10 +1288,13 @@ async function syncSearch(win, signal, progress, recheck){
   // 搜索结果里每个会话只有最早的几封，邮件较多的会话补读完整
   const long = threads.filter(t => (Number(t.messageCount) || 0) > (Array.isArray(t.messages) ? t.messages.length : 0)).slice(0, 15);
   for (const t of long){
-    const r = await gmail('get_thread', { threadId: t.id, messageFormat: 'MINIMAL' }, signal);
+    await sleep(300, signal);
+    let r;
+    try { r = await gmail('get_thread', { threadId: t.id, messageFormat: 'MINIMAL' }, signal, wait); }
+    catch(e){ if (isQuota(e)){ limited = true; break; } throw e; }
     if (Array.isArray(r.messages) && r.messages.length) t.messages = r.messages;
   }
-  return { threads: threads, more: more };
+  return { threads: threads, more: more, limited: limited };
 }
 
 function syncMessages(threads, fromMs, recheck){
@@ -1321,13 +1335,13 @@ async function syncParse(msgs, bodies, size, signal, progress){
   return items;
 }
 
-async function syncBodies(list, signal, progress){
+async function syncBodies(list, signal, progress, wait){
   const bodies = {}; let n = 0, i = 0;
   async function worker(){
     while (i < list.length){
       const m = list[i++];
       try {
-        const r = await gmail('get_message', { messageId: m.id, messageFormat: 'PLAIN_TEXT' }, signal);
+        const r = await gmail('get_message', { messageId: m.id, messageFormat: 'PLAIN_TEXT' }, signal, wait);
         const b = cleanBody(r.plaintextBody);
         if (b) bodies[m.id] = b;
       } catch(e){ if (e && e.code === 'cancelled') throw e; }   // 单封读不出来就沿用预览的识别结果
@@ -1362,19 +1376,20 @@ async function runSync(){
   const btn = $('#sync-go'), box = $('#sync-status'), out = $('#mail-out');
   btn.disabled = true; out.innerHTML = '';
   const say = html => { if (S.modal === m) box.innerHTML = '<p class="hint">' + html + ' <button type="button" class="btn sm" data-act="mail-stop">停止</button></p>'; };
+  const wait = w => say('Gmail 请求太频繁了，等 ' + Math.round(w / 1000) + ' 秒再试…');
   let phase = 'gmail';
   try {
     const win = syncWindow($('#sync-range').value);
     say('正在搜索 Gmail…第一次使用会先问你是否允许页面读取 Gmail。');
     const recheck = !!($('#sync-recheck') && $('#sync-recheck').checked);
-    const found = await syncSearch(win, ctl.signal, n => say('正在搜索 Gmail…已找到 ' + n + ' 个会话'), recheck);
+    const found = await syncSearch(win, ctl.signal, n => say('正在搜索 Gmail…已找到 ' + n + ' 个会话'), recheck, wait);
     const sm = syncMessages(found.threads, win.from, recheck);
     let msgs = sm.msgs;
     if (msgs.length > SYNC.maxMsgs){ msgs = msgs.slice(0, SYNC.maxMsgs); found.more = true; }
     m.partial = found.more;
     if (!msgs.length){
       box.innerHTML = '<p class="sync-sum">' + (found.threads.length ? '没有需要处理的新邮件' + (sm.again ? '（' + sm.again + ' 封之前同步过）' : '') + '。' : '这个时间范围里没有找到求职相关的邮件。') +
-        (m.partial ? '再点一次「开始搜索」会接着往下找。' : '') + '</p>';
+        (m.partial ? (found.limited ? 'Gmail 暂时限流了，过几分钟再点一次「开始搜索」会接着找。' : '再点一次「开始搜索」会接着往下找。') : '') + '</p>';
       if (!m.partial) syncMeta({ lastSync: todayStr() });
       return;
     }
@@ -1391,7 +1406,7 @@ async function runSync(){
     const chosen = pick.slice(0, SYNC.bodyMax);
     if (chosen.length){
       phase = 'gmail';
-      const bodies = await syncBodies(chosen, ctl.signal, (i, n) => say('读取 ' + n + ' 封邮件的正文，核对截止日期和结果（' + i + ' / ' + n + '）…'));
+      const bodies = await syncBodies(chosen, ctl.signal, (i, n) => say('读取 ' + n + ' 封邮件的正文，核对截止日期和结果（' + i + ' / ' + n + '）…'), wait);
       const withBody = chosen.filter(x => bodies[x.id]);
       if (withBody.length){
         phase = 'claude';
@@ -1423,7 +1438,7 @@ async function runSync(){
       hidden ? hidden + ' 项已经在记录里，没有再列出' : '',
       sm.again ? sm.again + ' 封之前同步过，已跳过' : '',
       pick.length > chosen.length ? '只核对了前 ' + chosen.length + ' 封的正文' : '',
-      m.partial ? '邮件太多，这次先处理最新的 ' + msgs.length + ' 封；保存后再点一次「开始搜索」，会接着处理剩下的' : ''
+      m.partial ? (found.limited ? 'Gmail 暂时限流了，这次先处理已经找到的 ' + msgs.length + ' 封；过几分钟再点一次「开始搜索」，会接着处理剩下的' : '邮件太多，这次先处理最新的 ' + msgs.length + ' 封；保存后再点一次「开始搜索」，会接着处理剩下的') : ''
     ].filter(Boolean).join('；') + '。</p>';
     if (!items.length){
       out.innerHTML = '<p class="empty-note">没有识别到需要保存的求职邮件。' + (m.partial ? '再点一次「开始搜索」会接着处理剩下的。' : '') + '</p>';
@@ -1433,7 +1448,8 @@ async function runSync(){
     renderMailItems(items);
   } catch(e){
     if (S.modal === m){
-      box.innerHTML = e && e.code === 'cancelled' ? '<p class="hint">已停止。</p>' : '<p class="empty-note" style="color:var(--warn)">' + esc(syncErr(e, phase)) + '</p>';
+      box.innerHTML = e && e.code === 'cancelled' ? '<p class="hint">已停止。</p>' : '<p class="empty-note" style="color:var(--warn)">' + esc(syncErr(e, phase)) + '</p>' +
+        (e && (e.code === 'not_in_manifest' || e.code === 'consent_required' || e.code === 'approval_required' || e.code === 'not_granted') ? '<p><button type="button" class="btn sm" data-act="open-perms">打开权限设置</button></p>' : '');
     }
   } finally {
     if (S.modal === m){ m.ctl = null; btn.disabled = false; }
@@ -1963,6 +1979,12 @@ document.addEventListener('click', function(e){
     }
     else if (a === 'toggle-missed'){
       const app = cur(); if (app) patchEvents(app, evs => evs.map(x => x.id === act.dataset.ev ? setMissed(x, true) : x));
+    }
+    else if (a === 'open-perms'){
+      (async function(){
+        try { const P = await window.claude.use('permissions'); await P.manage(); }
+        catch(err){ toast('打不开权限面板，请用页面上方的「权限」菜单', true); }
+      })();
     }
     else if (a === 'next') openNext(act.dataset.id, act.dataset.ev, act);
     else if (a === 'nx-pick') pickNext(act.dataset.k);
