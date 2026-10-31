@@ -876,6 +876,16 @@ async function deleteApp(btn){
 
 /* ---------- shared: add events / create applications ---------- */
 const roleKey = r => String(r || '').toLowerCase().replace(/[(（][^)）]*[)）]/g, ' ').replace(/\s+/g, ' ').trim();   // 括号里的缩写（如 "(TDP)"）不算不同的职位
+/* 一封「投递确认」邮件对上了记录里已有的这家公司（同公司、同职位或职位没写）时：
+   promote = 那条记录原来只有拒信 / 测评、没有投递记录：这封确认才是真正的投递，改成计入投递数，日期用这封邮件的；
+   new     = 已有的那条投递在好几天之前：同一家公司的另一次投递（不同的职位编号，名字可能一样），新建一条；
+   skip    = 就是同一次投递（前后一天内，比如系统发了两封确认），不再重复记。 */
+function appliedMatch(it, list){
+  const a = findApp(list, it.company, it.role); if (!a) return null;
+  if (a.uncounted === true) return { app: a, mode: 'promote' };
+  if (Math.abs(diffDays(it.date, a.appliedOn)) >= 2) return { app: a, mode: 'new' };
+  return { app: a, mode: 'skip' };
+}
 function findApp(list, company, role){
   const c = String(company || '').trim().toLowerCase();
   const m = list.filter(a => String(a.company || '').trim().toLowerCase() === c);
@@ -892,9 +902,10 @@ function findApp(list, company, role){
 
 async function applyItems(items){
   const local = S.apps.map(a => ({ id:a.id, company:a.company, role:a.role || '', appliedOn:a.appliedOn, uncounted:a.uncounted === true, events:(a.events || []).map(e => Object.assign({}, e)) }));
-  const res = { created:0, added:0, skipped:0, uncounted:0 };
+  const res = { created:0, added:0, skipped:0, uncounted:0, promoted:0 };
   for (const it of items){
-    const app = findApp(local, it.company, it.role);
+    let app = findApp(local, it.company, it.role), mode = '';
+    if (it.kind === 'applied' && app){ mode = appliedMatch(it, local).mode; if (mode === 'new') app = null; }
     let ev = null;
     if (it.kind !== 'applied'){
       ev = { id: uid(), kind: it.kind, date: it.date, done: false };
@@ -912,6 +923,10 @@ async function applyItems(items){
       await save(() => ref.set(data));
       local.push({ id: ref.id, company: it.company, role: it.role || '', appliedOn: it.date, uncounted: unc, events: ev ? [ev] : [] });
       res.created++;
+    } else if (mode === 'promote'){
+      const day = it.date < app.appliedOn ? it.date : app.appliedOn;
+      await save(() => S.db.doc('apps/' + app.id).update({ uncounted: false, appliedOn: day, updatedAt: new Date().toISOString() }));
+      app.uncounted = false; app.appliedOn = day; res.promoted++;
     } else if (ev){
       app.events.push(ev);
       const events = app.events.map(e => Object.assign({}, e));
@@ -1144,7 +1159,8 @@ function mailRow(el){
 function syncMailItem(el){
   const r = mailRow(el);
   const hit = r.company ? findApp(S.apps, r.company, r.role) : null;
-  el.querySelector('[data-f=match]').textContent = !r.company ? '' : hit ? '· 已有投递，' + (r.kind === 'applied' ? '会跳过' : '会添加进展') : r.kind === 'applied' ? '· 新建投递' : r.kind === 'offer' ? '· 没有对应的投递，但拿到 Offer 说明你投过，会新建一条并计入投递数' : '· 没有对应的投递，会记下这封' + (r.kind === 'rejected' ? '拒信' : '邮件') + '，但不计入投递数';
+  const am = r.company && r.kind === 'applied' ? appliedMatch(r, S.apps) : null;
+  el.querySelector('[data-f=match]').textContent = !r.company ? '' : am && am.mode === 'promote' ? '· 这家公司原来只有拒信 / 测评、没有投递记录：会补成一条投递，日期用这封邮件的' : am && am.mode === 'new' ? '· 这家公司之前有一条投递（' + short(am.app.appliedOn) + '），这封是新的一次：会新建一条' : hit ? '· 已有投递，' + (r.kind === 'applied' ? '会跳过' : '会添加进展') : r.kind === 'applied' ? '· 新建投递' : r.kind === 'offer' ? '· 没有对应的投递，但拿到 Offer 说明你投过，会新建一条并计入投递数' : '· 没有对应的投递，会记下这封' + (r.kind === 'rejected' ? '拒信' : '邮件') + '，但不计入投递数';
   el.classList.toggle('off', !r.on);
 }
 function syncMailSel(){
@@ -1169,6 +1185,7 @@ async function saveMail(){
     const parts = [];
     if (r.created - r.uncounted) parts.push('新建 ' + (r.created - r.uncounted) + ' 条投递');
     if (r.uncounted) parts.push(r.uncounted + ' 封邮件没有对应的投递，已记下但不计入投递数');
+    if (r.promoted) parts.push(r.promoted + ' 条原来没有投递记录的，补成了投递');
     if (r.added) parts.push('添加 ' + r.added + ' 条进展');
     if (r.skipped) parts.push('跳过 ' + r.skipped + ' 条已有投递');
     const meta = {};
@@ -1182,7 +1199,7 @@ async function saveMail(){
 
 /* ---------- sync from Gmail (read-only: search_threads, get_thread, get_message) ---------- */
 const GMAIL = 'Gmail';
-const SYNC = { pagesMax:20, pageSize:25, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:3000, pageGap:3000, waits:[5000, 15000, 30000], cool:[10, 30, 60], coolSoon:5 };
+const SYNC = { pagesMax:20, pageSize:50, maxMsgs:150, batch:25, bodyBatch:6, bodyMax:20, bodyChars:3500, skipKeep:3000, pageGap:3000, waits:[5000, 15000, 30000], cool:[10, 30, 60], coolSoon:5 };
 const GMAIL_TOPIC = 'subject:(application OR applying OR applied OR assessment OR interview OR "coding challenge" OR "take-home" OR offer OR "next steps" OR candidacy OR "phone screen" OR "thank you for your interest" OR unfortunately OR "moving forward")';
 const GMAIL_FROM = 'from:(greenhouse OR lever OR ashbyhq OR workday OR myworkday OR icims OR smartrecruiters OR jobvite OR workable OR hackerrank OR codesignal OR hirevue OR codility OR karat OR recruiting OR careers OR talent OR hiring)';
 const GMAIL_SKIP = '-subject:("security code" OR "verification code" OR "verify your" OR password OR "confirm your email")';
@@ -1245,10 +1262,10 @@ function syncWindow(range){
   const last = isDate(S.mailsync.lastSync) ? S.mailsync.lastSync : '';
   if (range === 'last' && last){
     const from = addDays(last, -1);   // 多搜一天，避免时区造成的漏邮件
-    return { q: 'after:' + from.replace(/-/g, '/'), from: parse(from).getTime() };
+    return { fromDate: from, from: parse(from).getTime() };
   }
   const d = Math.max(1, parseInt(range, 10) || 14);
-  return { q: 'newer_than:' + d + 'd', from: Date.now() - d * 864e5 };
+  return { fromDate: ymd(new Date(Date.now() - d * 864e5)), from: Date.now() - d * 864e5 };
 }
 
 // 已经保存过的邮件（事件或新建的投递上记着邮件 ID），不再重复处理
@@ -1269,27 +1286,55 @@ function alreadyRecorded(it){
   const a = findApp(S.apps, it.company, it.role); if (!a) return false;
   return (a.events || []).some(e => e.kind === it.kind && (it.kind === 'rejected' || it.kind === 'offer' || e.date === it.date || (it.due && e.due === it.due)));
 }
+// 一次搜索的条件：[d0, d1) 这几天里的求职邮件。part：null = 标题关键词或招聘系统发件人（全部）；否则是 SYNC_PARTS 里的一组
+const GMAIL_BASE = '-in:spam -in:trash -in:sent -in:draft -category:promotions -category:social';
+const ATS_ALL = 'ashbyhq OR greenhouse OR myworkday OR workday OR workable OR lever OR icims OR smartrecruiters OR jobvite OR hackerrank OR codesignal OR hirevue OR codility OR karat OR recruiting OR careers OR talent OR hiring';
+// 一天里的邮件一次装不下时，按发件人分几组再搜（几组合起来 = 全部）
+const SYNC_PARTS = ['from:(ashbyhq)', 'from:(greenhouse)', 'from:(myworkday OR workday)', 'from:(workable OR lever OR icims OR smartrecruiters OR jobvite OR hackerrank OR codesignal OR hirevue OR codility OR karat)',
+  'from:(recruiting OR careers OR talent OR hiring)', GMAIL_TOPIC + ' -from:(' + ATS_ALL + ')'];
+function syncQuery(d0, d1, part){
+  const sel = part == null ? '(' + GMAIL_TOPIC + ' OR ' + GMAIL_FROM + ')' : SYNC_PARTS[part];
+  return ['after:' + d0.replace(/-/g, '/'), 'before:' + d1.replace(/-/g, '/'), GMAIL_BASE, sel, GMAIL_SKIP].join(' ');
+}
+
+/* Gmail 工具一次最多给 50 个会话，而且现在不再给「下一页」的标记，翻不了页。所以按日期把范围切小：
+   一个范围搜出来正好是满的一页、又没有下一页，就当成被截断，对半切开分别再搜（最后切到一天，一天还装不下就按条件再分两次）。
+   这样不会因为「看起来没有下一页」就把还没读到的邮件当成没有。 */
 async function syncSearch(win, signal, progress, recheck, wait, detail){
-  const q = [win.q, '-in:spam -in:trash -in:sent -in:draft -category:promotions -category:social', '(' + GMAIL_TOPIC + ' OR ' + GMAIL_FROM + ')', GMAIL_SKIP].join(' ');
-  const seen = syncSeen(recheck), threads = []; let token = '', more = false, fresh = 0, limited = false;
-  // 最新的邮件多半已经处理过了：一直翻页，直到凑够没处理过的，而不是只看最新的几页
-  for (let p = 0; p < SYNC.pagesMax; p++){
-    if (p > 0) await sleep(SYNC.pageGap, signal);   // 每页要读 50 个会话，连着翻太快 Gmail 会限流
-    const input = { query: q, pageSize: SYNC.pageSize, view: 'THREAD_VIEW_MINIMAL' };
-    if (token) input.pageToken = token;
-    let r;
-    try { r = await gmail('search_threads', input, signal, wait); }
-    catch(e){ if (p > 0 && isQuota(e)){ limited = true; more = true; break; } throw e; }   // 已经找到的先处理，剩下的下次接着来
-    (Array.isArray(r.threads) ? r.threads : []).forEach(function(t){
-      if (!t || typeof t.id !== 'string') return;
-      threads.push(t);
-      if ((Array.isArray(t.messages) ? t.messages : []).some(m => m && !seen.has(m.id))) fresh++;
-    });
-    token = typeof r.nextPageToken === 'string' ? r.nextPageToken : '';
-    progress(threads.length);
-    if (!token) break;
-    if (fresh >= SYNC.maxMsgs || p === SYNC.pagesMax - 1){ more = true; break; }
-  }
+  const seen = syncSeen(recheck), threads = [], ids = new Set(); let more = false, fresh = 0, limited = false, calls = 0;
+  const add = function(t){
+    if (!t || typeof t.id !== 'string' || ids.has(t.id)) return;
+    ids.add(t.id); threads.push(t);
+    if ((Array.isArray(t.messages) ? t.messages : []).some(m => m && !seen.has(m.id))) fresh++;
+  };
+  // 一个搜索条件的所有页；truncated = 第一页是满的、又没有下一页的标记（工具不给翻页）
+  const one = async function(q){
+    let token = '', tokened = false;
+    for (let p = 0; p < SYNC.pagesMax; p++){
+      if (calls++ > 0) await sleep(SYNC.pageGap, signal);   // 每次要读几十个会话，连着搜太快 Gmail 会限流
+      const input = { query: q, pageSize: SYNC.pageSize, view: 'THREAD_VIEW_MINIMAL' };
+      if (token) input.pageToken = token;
+      const r = await gmail('search_threads', input, signal, wait);
+      const list = Array.isArray(r.threads) ? r.threads : [];
+      list.forEach(add);
+      progress(threads.length);
+      token = typeof r.nextPageToken === 'string' ? r.nextPageToken : '';
+      if (token) tokened = true;
+      if (!token) return { truncated: !tokened && list.length >= SYNC.pageSize };
+      if (fresh >= SYNC.maxMsgs){ more = true; return { truncated: false }; }
+    }
+    more = true; return { truncated: false };
+  };
+  const range = async function(d0, d1){
+    if (fresh >= SYNC.maxMsgs){ more = true; return; }
+    const res = await one(syncQuery(d0, d1, null));
+    if (!res.truncated) return;
+    const days = diffDays(d1, d0);
+    if (days > 1){ const mid = addDays(d0, Math.ceil(days / 2)); await range(mid, d1); await range(d0, mid); return; }   // 新的先搜
+    for (let k = 0; k < SYNC_PARTS.length; k++){ if ((await one(syncQuery(d0, d1, k))).truncated) more = true; }   // 一天里也装不下：按发件人分组搜；某一组还装不下，就只读到一部分，下次接着来
+  };
+  try { await range(win.fromDate, addDays(todayStr(), 1)); }
+  catch(e){ if (threads.length && isQuota(e)){ limited = true; more = true; } else throw e; }   // 已经找到的先处理，剩下的下次接着来
   // 搜索结果有时只有 ID、发件人和标题，没有日期、预览、标签（Gmail 工具返回的内容会变）：没处理过的会话要读一下完整内容才有日期。
   // 另外，搜索结果里每个会话只有最早的几封，邮件较多的会话也补读完整
   const msgsOf = t => Array.isArray(t.messages) ? t.messages : [];
@@ -1444,7 +1489,7 @@ async function runSync(){
     // 已在记录里的投递确认不再列出；同一封事件只留一条
     const dup = new Set(); let hidden = 0;
     items = items.filter(function(it){
-      if (it.kind === 'applied' && findApp(S.apps, it.company, it.role)){ hidden++; return false; }
+      if (it.kind === 'applied'){ const am = appliedMatch(it, S.apps); if (am && am.mode === 'skip'){ hidden++; return false; } }
       if (it.kind !== 'applied' && alreadyRecorded(it)){ hidden++; return false; }
       const key = [it.company.toLowerCase(), it.kind, it.kind === 'applied' ? it.role.toLowerCase() : it.date + '|' + it.due].join('|');
       if (dup.has(key)) return false;
