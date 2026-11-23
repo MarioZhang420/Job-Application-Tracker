@@ -1630,6 +1630,7 @@ async function saveSankey(){
 function banner(msg){ const b = $('#banner'); b.textContent = msg; b.hidden = false; }
 function makeLocalDB(){
   const KEY = 'job-application-tracker:v1';
+  const BACKUP_VERSION = 1;
   let store = {}, persistent = true;
   try {
     localStorage.setItem(KEY + ':t', '1'); localStorage.removeItem(KEY + ':t');
@@ -1675,12 +1676,13 @@ function makeLocalDB(){
   return {
     doc: docRef, collection: colRef,
     exportAll: function(){
-      return { format:'job-application-tracker', version:1, exportedAt:new Date().toISOString(),
+      return { format:'job-application-tracker', version:BACKUP_VERSION, exportedAt:new Date().toISOString(),
         apps: inCol('apps').map(p => Object.assign({ id: p.split('/').pop() }, clone(store[p]))),
         settings: store['meta/settings'] ? clone(store['meta/settings']) : {} };
     },
     importAll: function(obj){
       if (!obj || obj.format !== 'job-application-tracker' || !Array.isArray(obj.apps)) throw new Error('format');
+      if (obj.version !== BACKUP_VERSION) throw new Error('backup-version');
       let n = 0;
       obj.apps.forEach(function(a){
         if (!a || typeof a.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(a.id) || typeof a.company !== 'string') return;
@@ -2003,7 +2005,7 @@ document.addEventListener('change', function(e){
     const rd = new FileReader();
     rd.onload = function(){
       try { const n = S.db.importAll(JSON.parse(String(rd.result))); toast('已导入 ' + n + ' 条投递'); }
-      catch(err){ toast('这个文件不是本工具导出的备份', true); }
+      catch(err){ toast(err.message === 'backup-version' ? '不支持这个备份版本，未导入任何数据。' : '这个文件不是本工具导出的备份', true); }
     };
     rd.readAsText(f); e.target.value = '';
   }
