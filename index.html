@@ -2005,6 +2005,7 @@ document.addEventListener('change', function(e){
       try { const n = S.db.importAll(JSON.parse(String(rd.result))); toast('已导入 ' + n + ' 条投递'); }
       catch(err){ toast('这个文件不是本工具导出的备份', true); }
     };
+    rd.onerror = function(){ toast('无法读取备份文件，请重新选择文件。', true); };
     rd.readAsText(f); e.target.value = '';
   }
   else if (e.target.id === 'todo-kind') $('#todo-due-lbl').textContent = (KINDS[e.target.value].due) + '日期';
@@ -2014,6 +2015,7 @@ document.addEventListener('change', function(e){
     if (f.size > 400000){ toast('文件太大，请直接粘贴邮件正文', true); e.target.value = ''; return; }
     const rd = new FileReader();
     rd.onload = function(){ const ta = $('#mail-text'); if (ta) ta.value = (ta.value ? ta.value + '\n---\n' : '') + String(rd.result).slice(0, 60000); };
+    rd.onerror = function(){ toast('无法读取邮件文件，请重新选择文件或粘贴正文。', true); };
     rd.readAsText(f); e.target.value = '';
   }
 });
