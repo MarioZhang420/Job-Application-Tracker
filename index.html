@@ -673,6 +673,7 @@ function openModal(html, opener){
 }
 function closeModal(){
   if (S.modal && S.modal.ctl) S.modal.ctl.abort();
+  if (S.modal) clearSankeyPreview(S.modal);
   S.modal = null;
   $('#overlay').hidden = true;
   $('#modal').classList.remove('wide');
@@ -1576,8 +1577,15 @@ function openSankey(opener){
   renderSankey();
 }
 
+function clearSankeyPreview(modal){
+  if (!modal.previewUrl) return;
+  URL.revokeObjectURL(modal.previewUrl);
+  delete modal.previewUrl;
+}
+
 function renderSankey(){
   const m = S.modal; if (!m || m.type !== 'sankey') return;
+  clearSankeyPreview(m);
   const model = skModel(m), box = $('#sk-fig'), T = SK_TEXT[m.lang];
   const un = skList(m, false), unRej = un.filter(a => statusOf(a) === 'rejected').length;
   $('#sk-hint').textContent = SK_HINT + (un.length ? ' 没有投递记录的 ' + un.length + ' 条（其中拒信 ' + unRej + ' 封）不算投递，没有画进图里。' : '');
@@ -1617,7 +1625,9 @@ async function saveSankey(){
     else if (c === 'rate_limited') toast('请稍等几秒再点一次', true);
     else if (blob && S.modal === m){
       // 这个环境不能直接下载：把图片显示出来，让你长按或右键保存
-      $('#sk-fig').innerHTML = '<img alt="' + esc(SK_TEXT[m.lang].alt) + '" src="' + URL.createObjectURL(blob) + '">';
+      clearSankeyPreview(m);
+      m.previewUrl = URL.createObjectURL(blob);
+      $('#sk-fig').innerHTML = '<img alt="' + esc(SK_TEXT[m.lang].alt) + '" src="' + m.previewUrl + '">';
       $('#sk-hint').textContent = '这里不能直接下载。请长按（电脑上右键）上面的图片，选「存储图片」或「图片另存为」。改动上面的选项会回到可编辑的预览。';
     } else toast('生成图片失败（' + String((e && (e.message || e.name || e.code)) || '未知原因').slice(0, 80) + '），请再试一次', true, 6000);
   } finally {
