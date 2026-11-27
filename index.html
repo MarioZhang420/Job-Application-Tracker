@@ -1074,8 +1074,9 @@ function openMail(opener){
 function extractJson(text){
   const t = String(text || '').trim();
   try { return JSON.parse(t); } catch(e){}
-  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence){ try { return JSON.parse(fence[1]); } catch(e){} }
+  for (const fence of t.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)){
+    try { return JSON.parse(fence[1]); } catch(e){}
+  }
   const i = t.search(/[\[{]/), j = Math.max(t.lastIndexOf(']'), t.lastIndexOf('}'));
   if (i >= 0 && j > i){ try { return JSON.parse(t.slice(i, j + 1)); } catch(e){} }
   return null;
